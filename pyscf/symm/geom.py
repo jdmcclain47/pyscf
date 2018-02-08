@@ -15,7 +15,7 @@
 # given molecule.  Regular operations (rotation, mirror etc) can be applied
 # next to identify the symmetry.  Current implementation only checks the
 # rotation functions and it's roughly enough for D2h and subgroups.
-# 
+#
 # There are special cases this detection method may break down, eg two H8 cube
 # molecules sitting on the same center but with random orientation.  The
 # system is in C1 while this detection method gives O group because the
@@ -35,6 +35,30 @@ import pyscf.symm.param
 TOLERANCE = 1e-5
 
 def parallel_vectors(v1, v2, tol=TOLERANCE):
+    """
+
+    Finds whether two lines are parallel.
+
+    Parameters
+    ----------
+    v1 : array_like
+        First vector.
+    v2 : array_like
+        Second vector.
+    tol : scalar
+        Tolerance for whether two lines are considered parallel.
+
+    Returns
+    -------
+    is_parallel : bool
+        Whether the two vectors are parallel.
+
+    Notes
+    -----
+    Note that a vector of length zero is defined to be parallel to any other
+    vector.
+
+    """
     if numpy.allclose(v1, 0, atol=tol) or numpy.allclose(v2, 0, atol=tol):
         return True
     else:
@@ -42,6 +66,27 @@ def parallel_vectors(v1, v2, tol=TOLERANCE):
         return (abs(cos-1) < TOLERANCE) | (abs(cos+1) < TOLERANCE)
 
 def argsort_coords(coords, decimals=None):
+    """
+
+    Returns the indices that would sort a set of coordinates, where the
+    coordinates are first sorted by x-, then y-, and finally z-coordinate.
+
+    Parameters
+    ----------
+    coords : array_like
+        `(N,3)` array of coordinates.
+    decimals : scalar
+        Precision for rounding in sort.
+
+    Returns
+    -------
+    idx : `(N,)` ndarray of ints
+        Index to sort `coords`.
+
+    """
+    if coords.shape[1] != 3:
+        raise ValueError("Expected second dimension of coords to be 3")
+
     if decimals is None:
         decimals = int(-numpy.log10(TOLERANCE)) - 1
     coords = numpy.around(coords, decimals=decimals)
@@ -49,16 +94,54 @@ def argsort_coords(coords, decimals=None):
     return idx
 
 def sort_coords(coords, decimals=None):
+    """
+
+    Returns a sorted set of coordinates, where the coordinates are first sorted
+    by x-, then y-, and finally z-coordinate.
+
+    Parameters
+    ----------
+    coords : array_like
+        `(N,3)` array of coordinates.
+    decimals : scalar
+        Precision for rounding in sort.
+
+    Returns
+    -------
+    sorted_coords : ndarray
+        Sorted `coords` array.
+
+    """
     if decimals is None:
         decimals = int(-numpy.log10(TOLERANCE)) - 1
     coords = numpy.asarray(coords)
     idx = argsort_coords(coords, decimals=decimals)
     return coords[idx]
 
-# ref. http://en.wikipedia.org/wiki/Rotation_matrix
 def rotation_mat(vec, theta):
-    '''rotate angle theta along vec
-    new(x,y,z) = R * old(x,y,z)'''
+    """
+
+    Gives a `(3,3)` rotation matrix for the rotation of `theta` radians about
+    an axis `vec`.  The angle is in the direction as dictated by the Right-hand
+    rule (see ref. https://en.wikipedia.org/wiki/Right-hand_rule).
+
+    Parameters
+    ----------
+    vec : array_like
+        `(3,)` vector array about which to rotate.
+    theta : scalar
+        Angle to rotate in radians.
+
+    Returns
+    -------
+    rotation_mat : `(3,3)` ndarray
+        3D rotation matrix.
+
+    Notes
+    -----
+    See ref. `http://en.wikipedia.org/wiki/Rotation_matrix` for more details.
+
+    """
     vec = _normalize(vec)
     uu = vec.reshape(-1,1) * vec.reshape(1,-1)
     ux = numpy.array((
@@ -70,35 +153,124 @@ def rotation_mat(vec, theta):
     r = c * numpy.eye(3) + s * ux + (1-c) * uu
     return r
 
-# reflection operation with householder
 def householder(vec):
+    """
+
+    Gives the `(3,3)` Householder matrix, `P`, for reflection across a given
+    hyperplane described by a normal vector `vec`.  The matrix `P` is given by
+
+    .. math:: P = I - 2vv^T
+
+    Parameters
+    ----------
+    vec : array_like
+        `(3,)` vector array about which to rotate.
+
+    Returns
+    -------
+    household_mat : `(3,3)` ndarray
+        3D Householder matrix.
+
+    Notes
+    -----
+    See ref. `http://en.wikipedia.org/wiki/Householder_transformation`
+    for more details.
+
+    """
     vec = _normalize(vec)
     return numpy.eye(3) - vec[:,None]*vec*2
 
-def closest_axes(axes, ref):
-    xcomp, ycomp, zcomp = numpy.einsum('ix,jx->ji', axes, ref)
+def closest_axes_index(axes, ref_axes):
+    """
+
+    This function finds a mapping of axes from a coordinate system `axes`
+    to axes from a reference coordinate system `ref_axes` such that there is
+    maximal overlap of axes with the reference coordinate system (not
+    necessarily the standard Cartesian coordinate system).
+
+    Parameters
+    ----------
+    axes : array_like
+        `(3,3)` matrix describing a coordinate system where each row is an
+        axis in the coordinate system.
+    ref_axes : array_like
+        `(3,3)` matrix describing a reference coordinate system where each row
+        is an axis in the coordinate system.
+
+    Returns
+    -------
+    axes_idx : `(3,)` list
+        mapping from old coordinate system axes to new coordinate system axes.
+
+    Notes
+    -----
+    This is a greedy search.  Not guaranteed to give a true maximum overlap.
+
+    """
+    # Here we use x,y,z as aliases for the 1st,2nd,3rd axis
+    xcomp, ycomp, zcomp = numpy.einsum('ix,jx->ji', axes, ref_axes)
     z_id = numpy.argmax(abs(zcomp))
-    xcomp[z_id] = ycomp[z_id] = 0       # remove z
+
+    # Remove z-component and maximize over x.
+    xcomp[z_id] = ycomp[z_id] = 0
     x_id = numpy.argmax(abs(xcomp))
-    ycomp[x_id] = 0                     # remove x
+
+    # Remove x-component and maximize over y.
+    ycomp[x_id] = 0
     y_id = numpy.argmax(abs(ycomp))
     return x_id, y_id, z_id
 
-def alias_axes(axes, ref):
-    '''Rename axes, make it as close as possible to the ref axes
-    '''
-    x_id, y_id, z_id = closest_axes(axes, ref)
+def align_axes(axes, ref_axes):
+    """
+
+    This function returns a reordering of the coordinate system `axes`
+    such that each component vector has maximal overlap with a reference
+    coordinate system `ref_axes`.
+
+    Parameters
+    ----------
+    axes : ndarray
+        `(3,3)` matrix describing a coordinate system where each row is an
+        axis in the coordinate system.
+    ref_axes : array_like
+        `(3,3)` matrix describing a reference coordinate system where each
+        row is an axis in the coordinate system.
+
+    Returns
+    -------
+    new_axes : ndarray
+        `(3,3)` matrix describing the reordered coordinate system.
+
+    Notes
+    -----
+    This is a greedy search.  Not guaranteed to give a true maximum overlap.
+
+    """
+    x_id, y_id, z_id = closest_axes_index(axes, ref_axes)
     new_axes = axes[[x_id,y_id,z_id]]
+    # Make the resulting coordinate system obey the 'Right-hand Rule'
     if numpy.linalg.det(new_axes) < 0:
         new_axes = axes[[y_id,x_id,z_id]]
     return new_axes
 
 
 def detect_symm(atoms, basis=None, verbose=logger.WARN):
-    '''Detect the point group symmetry for given molecule.
+    """
+
+    Detect the point group symmetry for a given molecule.
 
     Return group name, charge center, and nex_axis (three rows for x,y,z)
-    '''
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+
+    Notes
+    -----
+
+    """
     if isinstance(verbose, logger.Logger):
         log = verbose
     else:
@@ -108,16 +280,27 @@ def detect_symm(atoms, basis=None, verbose=logger.WARN):
     decimals = int(-numpy.log10(tol))
     log.debug('geometry tol = %g', tol)
 
+    # Set up symmetry object to handle all the possible symmetry operations
+    # on the input atoms and optional basis set.
     rawsys = SymmSys(atoms, basis)
+
+    # Obtain the eigenvalues of the dipole moment of the atomic-charge
+    # distribution.
     w1, u1 = rawsys.cartesian_tensor(1)
     axes = u1.T
     log.debug('principal inertia moments %s', w1)
 
+    # If we rotate the group in any direction and get itself (the SO(3) group),
+    # then this is the same as having all zero eigenvalues.
     if numpy.allclose(w1, 0, atol=tol):
         gpname = 'SO3'
         return gpname, rawsys.charge_center, numpy.eye(3)
 
-    elif numpy.allclose(w1[:2], 0, atol=tol): # linear molecule
+    # Linear molecule: If two directions are zero, then we only have one
+    # principal axis.
+    elif numpy.allclose(w1[:2], 0, atol=tol):
+
+        # Check for inversion symmetry
         if rawsys.has_icenter():
             gpname = 'Dooh'
         else:
@@ -125,12 +308,15 @@ def detect_symm(atoms, basis=None, verbose=logger.WARN):
         return gpname, rawsys.charge_center, axes
 
     else:
-        w1_degeneracy = _degeneracy(w1, decimals)
+        w1_degeneracy = _degeneracy(w1, decimals) # Get eigenvalue degeneracy
 
         n = None
         c2x = None
         mirrorx = None
+        # Check for a triply-degenerate dipole element present in the
+        # tetrahedral (T), octahedral (O), and icosohedral (I) groups.
         if 3 in w1_degeneracy: # T, O, I
+            # http://symmetry.jacobs-university.de
             # Because rotation vectors Rx Ry Rz are 3-degenerated representation
             # See http://www.webqc.org/symmetrypointgroup-td.html
             w2, u2 = rawsys.cartesian_tensor(2)
@@ -140,12 +326,19 @@ def detect_symm(atoms, basis=None, verbose=logger.WARN):
 
             log.debug('2d tensor %s', w2)
             log.debug('3d tensor %s', w3)
+
+            # Icosohedral group:
+            #     Dipole    : T group (degeneracy 3)
+            #     Quadrupole: H group (degeneracy 5)
+            #     Octopole  : G group (degeneracy 4)
             if (5 in w2_degeneracy and
                 4 in w3_degeneracy and len(w3_degeneracy) == 3):  # I group
                 gpname, new_axes = _search_i_group(rawsys)
                 if gpname is not None:
                     return gpname, rawsys.charge_center, _refine(new_axes)
 
+            # Tetrahedral & Octahedral group:
+            #     Quadrupole: T group (degeneracy 3)
             elif 3 in w2_degeneracy and len(w2_degeneracy) <= 3:  # T/O group
                 gpname, new_axes = _search_ot_group(rawsys)
                 if gpname is not None:
@@ -220,7 +413,7 @@ def detect_symm(atoms, basis=None, verbose=logger.WARN):
                     gpname = 'D2h'
                 else:
                     gpname = 'D2'
-                axes = alias_axes(axes, numpy.eye(3))
+                axes = align_axes(axes, numpy.eye(3))
             elif is_c2z or is_c2x or is_c2y:
                 if is_c2x:
                     axes = axes[[1,2,0]]
@@ -254,20 +447,20 @@ def subgroup(gpname, axes):
     if gpname in ('D2h', 'D2' , 'C2h', 'C2v', 'C2' , 'Ci' , 'Cs' , 'C1'):
         return gpname, axes
     elif gpname in ('SO3',):
-        #return 'D2h', alias_axes(axes, numpy.eye(3))
+        #return 'D2h', align_axes(axes, numpy.eye(3))
         return 'Dooh', axes
     elif gpname in ('Dooh',):
-        #return 'D2h', alias_axes(axes, numpy.eye(3))
+        #return 'D2h', align_axes(axes, numpy.eye(3))
         return 'Dooh', axes
     elif gpname in ('Coov',):
         #return 'C2v', axes
         return 'Coov', axes
     elif gpname in ('Oh',):
-        return 'D2h', alias_axes(axes, numpy.eye(3))
+        return 'D2h', align_axes(axes, numpy.eye(3))
     elif gpname in ('O',):
-        return 'D2', alias_axes(axes, numpy.eye(3))
+        return 'D2', align_axes(axes, numpy.eye(3))
     elif gpname in ('Ih',):
-        return 'Ci', alias_axes(axes, numpy.eye(3))
+        return 'Ci', align_axes(axes, numpy.eye(3))
     elif gpname in ('I',):
         return 'C1', axes
     elif gpname in ('Td', 'T', 'Th'):
@@ -275,7 +468,7 @@ def subgroup(gpname, axes):
         #x = _normalize(x+y)
         #y = numpy.cross(z, x)
         #return 'C2v', numpy.array((x,y,z))
-        return 'D2', alias_axes(axes, numpy.eye(3))
+        return 'D2', align_axes(axes, numpy.eye(3))
     elif re.search(r'S\d+', gpname):
         n = int(re.search(r'\d+', gpname).group(0))
         if n % 2 == 0:
@@ -438,18 +631,22 @@ class SymmSys(object):
         # fake systems, which treates the atoms of different basis as different atoms.
         # the fake systems do not have the same symmetry as the potential
         # it's only used to determine the main (Z-)axis
-        chg1 = numpy.pi - 2
+        chg1 = numpy.pi - 2 # A unique charge to label "decorated atoms"
+                            # like H1 and O1 instead of H and O
         coords = []
         fake_chgs = []
         idx = []
         for k, lst in self.atomtypes.items():
+            print "K, lst = ", k, lst
             idx.append(lst)
             coords.append([atoms[i][1] for i in lst])
             ksymb = mole._rm_digit(k)
+            print ksymb, k
             if ksymb != k:
+                print "AYYYY"
                 # Put random charges on the decorated atoms
                 fake_chgs.append([chg1] * len(lst))
-                chg1 *= numpy.pi-2
+                chg1 *= numpy.pi - 2
             elif 'GHOST' in ksymb:
                 ksymb = mole._remove_prefix_ghost(ksymb)
                 fake_chgs.append([mole._charge(ksymb)+.3] * len(lst))
@@ -474,14 +671,19 @@ class SymmSys(object):
                 self.group_atoms_by_distance.append(index[idx == i])
 
     def cartesian_tensor(self, n):
-        z = self.atoms[:,0]
-        r = self.atoms[:,1:]
+        charge = self.atoms[:,0]
+        coord = self.atoms[:,1:]
         ncart = (n+1)*(n+2)//2
-        natm = len(z)
-        tensor = numpy.sqrt(numpy.copy(z).reshape(natm,-1) / z.sum())
+        natom = len(charge)
+        # This is normalized for good-behavior at higher orders
+        tensor = numpy.sqrt(numpy.copy(charge).reshape(natom,-1) / charge.sum())
+        print tensor
         for i in range(n):
-            tensor = numpy.einsum('zi,zj->zij', tensor, r).reshape(natm,-1)
-        e, c = scipy.linalg.eigh(numpy.dot(tensor.T,tensor))
+            tensor = numpy.einsum('zi,zj->zij', tensor, coord).reshape(natom,-1)
+        #print tensor
+        #print numpy.dot(tensor,tensor.T)
+        e, c = scipy.linalg.eigh(numpy.dot(tensor,tensor.T))
+        #print e[-ncart:]
         return e[-ncart:], c[:,-ncart:]
 
     def symmetric_for(self, op):
@@ -756,7 +958,7 @@ if __name__ == "__main__":
     atom = shift_atom(atom, orig, axes)
     print(gpname, symm_identical_atoms(gpname, atom))
 
-    atom = [['H', (0,0,0)], ['H', (0,0,-1)], ['H', (0,0,1)]]
+    atom = [['H', (1,0,0)], ['H', (1,0,-1)], ['H', (1,0,1)]]
     gpname, orig, axes = detect_symm(atom)
     print(gpname, orig, axes)
     atom = shift_atom(atom, orig, axes)
