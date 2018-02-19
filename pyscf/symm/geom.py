@@ -315,9 +315,9 @@ def detect_symm(atoms, basis=None, verbose=logger.WARN):
         mirrorx = None
         # Check for a triply-degenerate dipole element present in the
         # tetrahedral (T), octahedral (O), and icosohedral (I) groups.
+        # More information found on http://symmetry.jacobs-university.de
         if 3 in w1_degeneracy: # T, O, I
-            # http://symmetry.jacobs-university.de
-            # Because rotation vectors Rx Ry Rz are 3-degenerated representation
+            # Because rotation vectors Rx Ry Rz are 3-degenerated representation.
             # See http://www.webqc.org/symmetrypointgroup-td.html
             w2, u2 = rawsys.cartesian_tensor(2)
             w3, u3 = rawsys.cartesian_tensor(3)
