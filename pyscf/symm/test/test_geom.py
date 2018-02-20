@@ -267,7 +267,7 @@ class KnowValues(unittest.TestCase):
     def test_c2(self):
         coords1 = numpy.dot(make4(2.5), 1)
         coords2 = make12(1.2)
-        axes = geom._make_axes(coords2[1]-coords2[0], coords2[2])
+        axes = geom._make_axes_from_2d(coords2[1]-coords2[0], coords2[2])
         coords2 = numpy.dot(coords2, axes.T)
         atoms = [['C', c] for c in numpy.vstack((coords1,coords2))]
         gpname, orig, axes = geom.detect_symm(atoms)
@@ -282,10 +282,10 @@ class KnowValues(unittest.TestCase):
 
     def test_cs(self):
         coords1 = make4(2.5)
-        axes = geom._make_axes(coords1[1]-coords1[0], coords1[2])
+        axes = geom._make_axes_from_2d(coords1[1]-coords1[0], coords1[2])
         coords1 = numpy.dot(coords1, axes.T)
         coords2 = make12(1.2)
-        axes = geom._make_axes(coords2[1]-coords2[0], coords2[2])
+        axes = geom._make_axes_from_2d(coords2[1]-coords2[0], coords2[2])
         coords2 = numpy.dot(coords2, axes.T)
         atoms = [['C', c] for c in numpy.vstack((coords1,coords2))]
         gpname, orig, axes = geom.detect_symm(atoms)
