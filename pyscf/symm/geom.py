@@ -859,7 +859,11 @@ class SymmSys(object):
 
     def search_mirrorx(self, zaxis, n):
         '''mirror which is parallel to z-axis'''
-        if n > 1 and zaxis is not None:
+        # If n > 1 is given, we expect a rotation axis to be given
+        if n > 1 and zaxis is None:
+            raise ValueError('For a non-trivial Cn axis of', n, 'an axis of '
+                             'rotation is expected.  Input zaxis is ', zaxis)
+        if n > 1:
             for lst in self.group_atoms_by_distance:
                 natm = len(lst)
                 r0 = self.atoms[lst[0],1:]
