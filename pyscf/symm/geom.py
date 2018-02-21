@@ -357,7 +357,7 @@ def detect_symm(atoms, basis=None, verbose=logger.WARN):
                 n = None
             else:
                 c2x = rawsys.search_c2x(axes[2], n)
-                mirrorx = rawsys.search_mirrorx(axes[2], n)
+                mirrorx = rawsys.search_mirrorx(n, axes[2])
 
         else:  # Label it as D2h or a subgroup
             n = -1
@@ -372,7 +372,7 @@ def detect_symm(atoms, basis=None, verbose=logger.WARN):
             zaxis, n = rawsys.search_highest_cn()
             if n > 1:  # Cnv, Cnh, Cn, Dnh, Dnd, Sn
                 c2x = rawsys.search_c2x(zaxis, n)
-                mirrorx = rawsys.search_mirrorx(zaxis, n)
+                mirrorx = rawsys.search_mirrorx(n, zaxis)
 
                 # Make other axis components based on whether C2
                 # or mirror axes were found
@@ -386,7 +386,7 @@ def detect_symm(atoms, basis=None, verbose=logger.WARN):
                             axes = _make_axes_from_2d(zaxis, axis)
                             break
             else:  # Ci or Cs or C1 with degenerated w1
-                mirror = rawsys.search_mirrorx(None, 1)  # Exhaustive search
+                mirror = rawsys.search_mirrorx(1, None)  # Exhaustive search
                 if mirror is not None:
                     xaxis = numpy.array((1.,0.,0.))
                     axes = _make_axes_from_2d(mirror, xaxis)
@@ -530,6 +530,7 @@ def subgroup(gpname, axes):
 
 
 def symm_ops(gpname, axes=None):
+    # FIXME: How does gpname enter into this?
     if axes is not None:
         raise RuntimeError('TODO: non-standard orientation')
     op1 = numpy.eye(3)
@@ -857,7 +858,7 @@ class SymmSys(object):
                             self.has_rotation(c2x, 2)):
                             return c2x
 
-    def search_mirrorx(self, zaxis, n):
+    def search_mirrorx(self, n, zaxis=None):
         '''mirror which is parallel to z-axis'''
         # If n > 1 is given, we expect a rotation axis to be given
         if n > 1 and zaxis is None:
