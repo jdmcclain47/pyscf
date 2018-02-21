@@ -640,7 +640,7 @@ class RotationAxisNotFound(Exception):
     pass
 
 class SymmSys(object):
-    def __init__(self, atoms, basis=None):
+    def __init__(self, atoms, basis=None, recenter_coords=True):
         self.atomtypes = mole.atom_types(atoms, basis)
         # fake systems, which treates the atoms of different basis as different atoms.
         # the fake systems do not have the same symmetry as the potential
@@ -667,7 +667,8 @@ class SymmSys(object):
         coords = numpy.array(numpy.vstack(coords), dtype=float)
         fake_chgs = numpy.hstack(fake_chgs)
         self.charge_center = numpy.einsum('i,ij->j', fake_chgs, coords)/fake_chgs.sum()
-        coords = coords - self.charge_center
+        if recenter_coords:
+            coords = coords - self.charge_center
 
         idx = numpy.argsort(numpy.hstack(idx))
         self.atoms = numpy.hstack((fake_chgs.reshape(-1,1), coords))[idx]
