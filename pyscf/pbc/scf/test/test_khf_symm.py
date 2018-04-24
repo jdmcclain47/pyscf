@@ -10,7 +10,7 @@ import numpy as np
 from pyscf.pbc import gto as pbcgto
 from pyscf.pbc import scf as pbchf
 from pyscf.pbc.scf import khf
-from pyscf.pbc.scf import symm_khf
+from pyscf.pbc.scf import khf_symm
 from pyscf.pbc.scf import kuhf
 import pyscf.pbc.tools
 
@@ -81,7 +81,7 @@ class KnowValues(unittest.TestCase):
 
         my_kpts = cell.make_kpts(nk, with_gamma_point=with_gamma_point)
         if with_symmetry:
-            mf = symm_khf.KRHF(cell, my_kpts)
+            mf = khf_symm.KRHF(cell, my_kpts)
         else:
             mf = khf.KRHF(cell, my_kpts)
 
@@ -102,7 +102,7 @@ class KnowValues(unittest.TestCase):
 
         my_kpts = cell.make_kpts(nk, with_gamma_point=with_gamma_point)
         if with_symmetry:
-            mf = symm_khf.KRHF(cell, my_kpts)
+            mf = khf_symm.KRHF(cell, my_kpts)
         else:
             mf = khf.KRHF(cell, my_kpts)
 
@@ -123,7 +123,7 @@ class KnowValues(unittest.TestCase):
 
         my_kpts = cell.make_kpts(nk, with_gamma_point=with_gamma_point)
         if with_symmetry:
-            mf = symm_khf.KRHF(cell, my_kpts)
+            mf = khf_symm.KRHF(cell, my_kpts)
         else:
             mf = khf.KRHF(cell, my_kpts)
 
@@ -186,5 +186,5 @@ class KnowValues(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    print("Full Tests for pbc.scf.symm_khf")
+    print("Full Tests for pbc.scf.khf_symm")
     unittest.main()

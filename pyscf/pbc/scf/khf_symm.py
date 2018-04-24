@@ -637,8 +637,6 @@ class KSCF(hf.SCF):
         from pyscf.pbc.scf import x2c
         return x2c.sfx2c1e(self)
 
-KRHF = KSCF
-
 
 if __name__ == '__main__':
     from pyscf.pbc import gto
