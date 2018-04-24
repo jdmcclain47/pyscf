@@ -12,6 +12,8 @@ from pyscf.gto import mole
 from pyscf.symm import geom
 from pyscf.symm import param
 
+# For a given (x, y, z) tuple, a 1 indicates that
+# the coordinate changes sign under the operation
 OP_PARITY_ODD = {
     'E'  : (0, 0, 0),
     'C2x': (0, 1, 1),
@@ -24,11 +26,29 @@ OP_PARITY_ODD = {
 }
 
 def tot_parity_odd(op, l, m):
+    '''
+
+    Whether the orbital with spherical harmonics `l, m` changes parity/sign
+    under an operation given by a string `op`.
+
+    Parameters
+    ----------
+    op: string
+        String denoting which operation is to be performed.
+    l: int
+        Spherical harmonic `l`.
+    m: int
+        Spherical harmonic `m`.
+
+    Returns
+    -------
+
+    '''
     if op == 'E':
         return 0
     else:
-        ox,oy,oz = OP_PARITY_ODD[op]
-        gx,gy,gz = param.SPHERIC_GTO_PARITY_ODD[l][l+m]
+        ox, oy, oz = OP_PARITY_ODD[op]
+        gx, gy, gz = param.SPHERIC_GTO_PARITY_ODD[l][l+m]
         return (ox and gx)^(oy and gy)^(oz and gz)
 
 def symm_adapted_basis(mol, gpname, eql_atom_ids=None):
@@ -37,7 +57,8 @@ def symm_adapted_basis(mol, gpname, eql_atom_ids=None):
     if gpname in ('Dooh', 'Coov'):
         return linearmole_symm_adapted_basis(mol, gpname, eql_atom_ids)
 
-    ops = numpy.asarray([param.D2H_OPS[op] for op in param.OPERATOR_TABLE[gpname]])
+    # Generate all operators and character table associated with group name
+    group_ops = numpy.asarray([param.D2H_OPS[op] for op in param.OPERATOR_TABLE[gpname]])
     chartab = numpy.array([x[1:] for x in param.CHARACTER_TABLE[gpname]])
     nirrep = chartab.__len__()
     aoslice = mol.aoslice_by_atom()
@@ -46,47 +67,55 @@ def symm_adapted_basis(mol, gpname, eql_atom_ids=None):
 
     sodic = [[] for i in range(8)]
     for atom_ids in eql_atom_ids:
-        r0 = mol.atom_coord(atom_ids[0])
-        op_coords = numpy.einsum('x,nxy->ny', r0, ops)
-# Using ops to generate other atoms from atom_ids[0]
-        coords0 = atom_coords[atom_ids]
-        natm = len(atom_ids)
-        dc = abs(op_coords.reshape(-1,1,3) - coords0).sum(axis=2)
-        op_relate_idx = numpy.argwhere(dc < geom.TOLERANCE)[:,1]
-        ao_loc = numpy.array([aoslice[atom_ids[i],2] for i in op_relate_idx])
+        generating_atom = atom_ids[0]
+        generating_coord = mol.atom_coord(generating_atom)
 
-        b0, b1 = aoslice[atom_ids[0],:2]
+        # Apply operations from group to produce all other possible
+        # atomic positions from generating_atom coordinate
+        op_coords = numpy.einsum('x,nxy->ny', generating_coord, group_ops)
+
+        symm_eq_atm_coords = atom_coords[atom_ids]
+        nsymm_eq_atm = len(atom_ids)
+
+        # Find which atom the operations map to
+        which_symm_eq_atm = abs(op_coords.reshape(-1,1,3) - symm_eq_atm_coords).sum(axis=2)
+        op_relate_idx = numpy.argwhere(which_symm_eq_atm < geom.TOLERANCE)[:,1]
+
+        # Get the offsets of the atomic orbitals for these atoms
+        ao_start_idx = numpy.array([aoslice[atom_ids[i], 2] for i in op_relate_idx])
+
+        start_shell_id, end_shell_id = aoslice[atom_ids[0], :2]
         ip = 0
-        for ib in range(b0, b1):
-            l = mol.bas_angular(ib)
-            if mol.cart:
+        for shell_id in range(start_shell_id, end_shell_id):
+            l = mol.bas_angular(shell_id)
+            if mol.cart:  # Cartesian GTO basis
                 degen = (l + 1) * (l + 2) // 2
-                cbase = numpy.zeros((degen,nirrep,nao))
-                for op_id, op in enumerate(ops):
+                cbase = numpy.zeros((degen, nirrep, nao))
+                for op_id, op in enumerate(group_ops):
                     n = 0
                     for x in range(l, -1, -1):
                         for y in range(l-x, -1, -1):
                             z = l-x-y
-                            idx = ao_loc[op_id] + n
-                            sign = op[0,0]**x * op[1,1]**y * op[2,2]**z
-                            cbase[n,:,idx] += sign * chartab[:,op_id]
+                            idx = ao_start_idx[op_id] + n
+                            sign = op[0, 0]**x * op[1, 1]**y * op[2, 2]**z
+                            cbase[n, :, idx] += sign * chartab[:, op_id]
                             n += 1
             else:
                 degen = l * 2 + 1
-                cbase = numpy.zeros((degen,nirrep,nao))
+                cbase = numpy.zeros((degen, nirrep, nao))
                 for op_id, op in enumerate(param.OPERATOR_TABLE[gpname]):
                     for n, m in enumerate(range(-l, l+1)):
-                        idx = ao_loc[op_id] + n
+                        idx = ao_start_idx[op_id] + n
                         if tot_parity_odd(op, l, m):
-                            cbase[n,:,idx] -= chartab[:,op_id]
+                            cbase[n, :, idx] -= chartab[:, op_id]
                         else:
-                            cbase[n,:,idx] += chartab[:,op_id]
+                            cbase[n, :, idx] += chartab[:, op_id]
             norms = numpy.sqrt(numpy.einsum('mij,mij->mi', cbase, cbase))
 
-            for i in range(mol.bas_nctr(ib)):
+            for i in range(mol.bas_nctr(shell_id)):
                 for n, ir in numpy.argwhere(norms > 1e-12):
                     c = numpy.zeros(nao)
-                    c[ip:] = cbase[n,ir,:nao-ip] / norms[n,ir]
+                    c[ip:] = cbase[n, ir, :nao-ip] / norms[n, ir]
                     sodic[ir].append(c)
                 ip += degen
     so = []
