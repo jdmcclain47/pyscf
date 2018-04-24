@@ -97,8 +97,9 @@ class KnowValues(unittest.TestCase):
         e = mf.kernel()
         return e
 
-    def _test_fcc(self, nk=[2,2,2], with_gamma_point=True, with_symmetry=False, only_coulomb=False):
-        cell = make_diamond_primitive(24, with_symmetry)
+    def _test_fcc(self, ng=24, nk=[2,2,2], with_gamma_point=True, with_symmetry=False,
+                  only_coulomb=False):
+        cell = make_diamond_primitive(ng, with_symmetry)
 
         my_kpts = cell.make_kpts(nk, with_gamma_point=with_gamma_point)
         if with_symmetry:
@@ -153,10 +154,9 @@ class KnowValues(unittest.TestCase):
 
     def test_fcc_222_without_gamma_only_coulomb(self):
         nk = [2, 2, 2]
-        e = -7.87041175579
+        e = self._test_fcc(nk=nk, with_gamma_point=False, with_symmetry=True, only_coulomb=False)
         e_symm = self._test_fcc(nk=nk, with_gamma_point=False, with_symmetry=True, only_coulomb=True)
         self.assertAlmostEqual(e_symm, e, 8)
-        #print 'energy (symmetry) = ', e_symm
 
     def test_fcc_222_without_gamma(self):
         nk = [2, 2, 2]

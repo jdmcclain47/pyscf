@@ -15,7 +15,7 @@ import pyscf.symm.param
 TOLERANCE = 1e-5
 
 
-def _pg_symm_no_translations(translation_vectors, atoms, basis=None):
+def _pgroup_symm_no_translations(translation_vectors, atoms, basis=None):
     unit_cell = numpy.array(cartesian_prod(([0,1], [0,1], [0,1])))
     cell_lattice = numpy.dot(unit_cell, translation_vectors)
     cell_center = mole.charge_center(zip([1] * len(cell_lattice), cell_lattice))
@@ -247,8 +247,8 @@ def transformation_mapping(mol, group_ops, recenter_coords=True):
         ip = 0
         for shell_id in range(start_shell_id, end_shell_id):
             l = mol.bas_angular(shell_id)
-            raise NotImplementedError("Cartesian GTO basis has not been tested")
             if mol.cart:  # Cartesian GTO basis
+                raise NotImplementedError('Cartesian GTO basis has not been tested with symmetry')
                 degen = (l + 1) * (l + 2) // 2
                 for op_id, op in enumerate(group_ops_symbols):
                     n = 0
