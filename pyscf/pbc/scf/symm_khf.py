@@ -117,12 +117,16 @@ def get_fock(mf, h1e_kpts, s_kpts, vhf_kpts, dm_kpts, cycle=-1, diis=None,
     if damp_factor is None:
         damp_factor = mf.damp
 
+    #h1e_kpts = h1e_kpts[mf.irr_kpts_idx]
+
     f_kpts = h1e_kpts + vhf_kpts
+
     if diis and cycle >= diis_start_cycle:
         f_kpts = diis.update(s_kpts, dm_kpts, f_kpts, mf, h1e_kpts, vhf_kpts)
     if abs(level_shift_factor) > 1e-4:
         f_kpts = [hf.level_shift(s, dm_kpts[k], f_kpts[k], level_shift_factor)
                   for k, s in enumerate(s_kpts)]
+
     return lib.asarray(f_kpts)
 
 def get_fermi(mf, mo_energy_kpts=None, mo_occ_kpts=None):
@@ -204,8 +208,6 @@ def energy_elec(mf, dm_kpts=None, h1e_kpts=None, vhf_kpts=None):
     if h1e_kpts is None: h1e_kpts = mf.get_hcore()
     if vhf_kpts is None: vhf_kpts = mf.get_veff(mf.cell, dm_kpts)
 
-    #for idm, dm in enumerate(dm_kpts):
-    #    print idm, dm.flatten()[:2]
     nkpts = len(dm_kpts)
     #dm_kpts  = dm_kpts[mf.irr_kpts_idx]
     #h1e_kpts = h1e_kpts[mf.irr_kpts_idx]
@@ -306,11 +308,11 @@ def init_guess_by_chkfile(cell, chkfile_name, project=True, kpts=None):
     return dm[0] + dm[1]
 
 def get_kpt_weights(kpt_stars):
-    nelements_per_star = np.array([1. * len(star) for star, op in kpt_stars])
+    nelements_per_star = np.array([1. * len(star) for star in kpt_stars])
     return nelements_per_star / np.sum(nelements_per_star)
 
 def get_irr_kpts(kpts, kpt_stars):
-    kpts_idx, kpts = zip(*[(star[0], kpts[star[0]]) for star, op in kpt_stars])
+    kpts_idx, kpts = zip(*[(star[0], kpts[star[0]]) for star in kpt_stars])
     return list(kpts_idx), list(kpts)
 
 class KSCF(hf.SCF):
@@ -334,22 +336,15 @@ class KSCF(hf.SCF):
         self.with_df = df.FFTDF(cell)
         self.exxdiv = exxdiv
         self.kpts = kpts
-        self.kpt_stars = get_stars(self.kpts, self.cell._atom, only_inversion=False)
 
-        #kpt_star_weights = [(star[0], ikpt, len(star)) for star, op in self.kpt_stars for ikpt in star]
-        #print kpt_star_weights
-        #self.kpt_star_weights = sorted(kpt_star_weights, key=lambda x: x[1])
-        #self.kpt_weights = np.array([1. * x[2] for x in kpt_star_weights])
-        #self.kpt_weights = np.array([1. * len(star[0]) for star in self.kpt_stars for ikpt in star[0]])
-        self.kpt_weights = get_kpt_weights(self.kpt_stars) #np.array([len(star) for star, op in self.kpt_stars])
+        self.kpt_stars, self.kpt_stars_ops, \
+                self.inv_list, self.ao_transformation, self.basis_mapping, self.symm_axis = \
+                get_stars(self.kpts, self.cell._atom, self.cell.basis, only_inversion=False)
+        self.with_df.kpt_stars = self.kpt_stars
+
+        self.kpt_weights = get_kpt_weights(self.kpt_stars)
         self.with_df.kpt_weights = self.kpt_weights
-        print self.kpt_weights
         self.irr_kpts_idx, self.irr_kpts = get_irr_kpts(self.kpts, self.kpt_stars)
-        print self.irr_kpts_idx
-        print self.kpt_stars
-        #print self.kpt_star_weights
-        print self.irr_kpts
-        self.with_df.irr_kpts = self.irr_kpts
 
         self.direct_scf = False
 
@@ -472,16 +467,6 @@ class KSCF(hf.SCF):
         #        hcore.append(irr_transform(irr_hcore[irr_kpt,:,:], op=1))
         #    else:
         #        hcore.append(irr_transform(irr_hcore[irr_kpt,:,:], op=-1))
-# self.kpt_star_weights
-#[[0.  0.  0.5]
-# [1.  1.  0.5]
-# [2.  2.  0.5]
-# [3.  3.  0.5]
-# [3.  4.  0.5]
-# [2.  5.  0.5]
-# [1.  6.  0.5]
-# [0.  7.  0.5]]
-#[0, 1, 2, 3]
 
         hcore = lib.asarray(hcore)
         return hcore
@@ -510,8 +495,7 @@ class KSCF(hf.SCF):
         if dm_kpts is None: dm_kpts = self.make_rdm1()
         cpu0 = (time.clock(), time.time())
         vj, vk = self.with_df.get_jk(dm_kpts, hermi, self.kpts, kpts_band,
-                                     exxdiv=self.exxdiv, with_k=False)
-        vk = 0.0 * vj
+                                     exxdiv=self.exxdiv)
         logger.timer(self, 'vj and vk', *cpu0)
         return vj, vk
 
@@ -547,6 +531,28 @@ class KSCF(hf.SCF):
             e, c = self._eigh(h_kpts[k], s_kpts[k])
             eig_kpts.append(e)
             mo_coeff_kpts.append(c)
+
+        for icoset, coset in enumerate(self.kpt_stars):
+            if len(coset) == 1:  # Nothing to do here!
+                continue
+
+            irr_kpoint = coset[0]
+            for kpt_idx_in_star, reducible_kpt in enumerate(coset):
+                if kpt_idx_in_star == 0:
+                    continue
+
+                # Check if this is an inversion
+                if self.inv_list[reducible_kpt][2]:
+                    inv_kpoint = self.inv_list[reducible_kpt][1]
+                    mo_coeff_kpts[reducible_kpt] = np.conj(mo_coeff_kpts[inv_kpoint])
+                else:
+                    # Get the transformation to orbitals and the rearrangement of orbitals
+                    transformation = self.ao_transformation[icoset][kpt_idx_in_star]
+                    basis_mapping = self.basis_mapping[icoset][kpt_idx_in_star]
+
+                    mo_coeff_kpts[reducible_kpt] = np.dot(transformation, mo_coeff_kpts[irr_kpoint])
+                    mo_coeff_kpts[reducible_kpt] = mo_coeff_kpts[reducible_kpt][basis_mapping, :]
+
         return eig_kpts, mo_coeff_kpts
 
     def make_rdm1(self, mo_coeff_kpts=None, mo_occ_kpts=None):
@@ -559,10 +565,6 @@ class KSCF(hf.SCF):
             # which is stored in self.mo_occ of the scf.hf.RHF superclass
             mo_occ_kpts = self.mo_occ
 
-        #if mo_coeff_kpts is not None:
-        #    print 'make_rdm1'
-        #    print mo_coeff_kpts
-        #    print mo_occ_kpts
         return make_rdm1(mo_coeff_kpts, mo_occ_kpts)
 
     def get_bands(self, kpts_band, cell=None, dm_kpts=None, kpts=None):
@@ -642,167 +644,25 @@ if __name__ == '__main__':
     from pyscf.pbc import gto
     cell = gto.Cell()
     cell.atom = '''
-    He 0 0 1
-    He 1 0 1
+    N -0.5 -0.15 -0.5
+    N -0.5  0.15  0.5
+    N  0.5 -0.15  0.5
+    N  0.5  0.15 -0.5
     '''
-    cell.basis = '321g'
+    cell.basis = { 'N': 'gth-dzvp' }
     cell.a = np.eye(3) * 3
-    cell.gs = [25] * 3
-    tol = 1e-14
+    cell.gs = [24] * 3
+    tol = 1e-8
     cell.conv_tol = tol
     cell.precision = tol
     cell.verbose = 5
     cell.build()
-    kpt = [3,3,3]
-    mf = KRHF(cell, cell.make_kpts(kpt, with_gamma_point=False))
+
+    kpt = [2, 2, 2]
+    my_kpts = cell.make_kpts(kpt, with_gamma_point=True)
+
+    mf = KRHF(cell, my_kpts)
+    mf.direct_scf_tol = tol
     mf.conv_tol_grad = tol*1000
     e = mf.kernel()
-    if kpt == [2,2,2]:
-        #assert(e - -5.86521437670938 < 1e-12)
-        assert(abs(e - -3.33158932225045) < 1e-12)  # with_k = False
-    elif kpt == [2,2,3]:
-        #assert(abs(e - -5.8652134686146) < 1e-12)
-        assert(abs(e - -3.33158895465433) < 1e-12)
-    elif kpt == [3,3,3]:
-        #assert(abs(e - -5.86501194631279) < 1e-12)
-        assert(abs(e - -3.33012203400506) < 1e-12)
     mf.analyze()
-
-#   0 (-0.250 -0.250 -0.333)   [-1.29905467 -0.78523682] [1.27053927 2.03092942]
-#   1 (-0.250 -0.250  0.000)   [-1.30005369 -0.78679906] [1.24686667 2.00437288]
-#   2 (-0.250 -0.250  0.333)   [-1.29905468 -0.78523682] [1.27053929 2.03092939]
-#   3 (-0.250  0.250 -0.333)   [-1.29905467 -0.78523682] [1.27053927 2.03092942]
-#   4 (-0.250  0.250  0.000)   [-1.30005369 -0.78679906] [1.24686667 2.00437288]
-#   5 (-0.250  0.250  0.333)   [-1.29905468 -0.78523682] [1.27053929 2.03092939]
-#   6 ( 0.250 -0.250 -0.333)   [-1.29905468 -0.78523682] [1.27053929 2.03092939]
-#   7 ( 0.250 -0.250  0.000)   [-1.30005369 -0.78679906] [1.24686667 2.00437288]
-#   8 ( 0.250 -0.250  0.333)   [-1.29905467 -0.78523682] [1.27053927 2.03092942]
-#   9 ( 0.250  0.250 -0.333)   [-1.29905468 -0.78523682] [1.27053929 2.03092939]
-#  10 ( 0.250  0.250  0.000)   [-1.30005369 -0.78679906] [1.24686667 2.00437288]
-#  11 ( 0.250  0.250  0.333)   [-1.29905467 -0.78523682] [1.27053927 2.03092942]
-
-#   0 (-0.333 -0.333 -0.333)   [-1.29770498 -0.79046232] [1.23704826 2.00046713]
-#   1 (-0.333 -0.333  0.000)   [-1.29865709 -0.79213149] [1.21405719 1.97375878]
-#   2 (-0.333 -0.333  0.333)   [-1.29770499 -0.79046232] [1.23704828 2.00046712]
-#   3 (-0.333  0.000 -0.333)   [-1.29865634 -0.79213085] [1.21405389 1.97375618]
-#   4 (-0.333  0.000  0.000)   [-1.29963524 -0.79383438] [1.19123857 1.94736928]
-#   5 (-0.333  0.000  0.333)   [-1.29865635 -0.79213085] [1.21405391 1.97375616]
-#   6 (-0.333  0.333 -0.333)   [-1.29770498 -0.79046232] [1.23704826 2.00046713]
-#   7 (-0.333  0.333  0.000)   [-1.29865709 -0.79213149] [1.21405719 1.97375878]
-#   8 (-0.333  0.333  0.333)   [-1.29770499 -0.79046232] [1.23704828 2.00046712]
-#   9 ( 0.000 -0.333 -0.333)   [-1.30066431 -0.77303541] [1.36015866 2.1504475 ]
-#  10 ( 0.000 -0.333  0.000)   [-1.30173003 -0.77434799] [1.3348854  2.12360907]
-#  11 ( 0.000 -0.333  0.333)   [-1.30066431 -0.77303541] [1.36015866 2.1504475 ]
-#  12 ( 0.000  0.000 -0.333)   [-1.30172929 -0.77434733] [1.33488193 2.12360629]
-#  13 ( 0.000  0.000  0.000)   [-1.30282345 -0.77568886] [1.30985268 2.09705455]
-#  14 ( 0.000  0.000  0.333)   [-1.30172929 -0.77434733] [1.33488193 2.12360629]
-#  15 ( 0.000  0.333 -0.333)   [-1.30066431 -0.77303541] [1.36015866 2.1504475 ]
-#  16 ( 0.000  0.333  0.000)   [-1.30173003 -0.77434799] [1.3348854  2.12360907]
-#  17 ( 0.000  0.333  0.333)   [-1.30066431 -0.77303541] [1.36015866 2.1504475 ]
-#  18 ( 0.333 -0.333 -0.333)   [-1.29770499 -0.79046232] [1.23704828 2.00046712]
-#  19 ( 0.333 -0.333  0.000)   [-1.29865709 -0.79213149] [1.21405719 1.97375878]
-#  20 ( 0.333 -0.333  0.333)   [-1.29770498 -0.79046232] [1.23704826 2.00046713]
-#  21 ( 0.333  0.000 -0.333)   [-1.29865635 -0.79213085] [1.21405391 1.97375616]
-#  22 ( 0.333  0.000  0.000)   [-1.29963524 -0.79383438] [1.19123857 1.94736928]
-#  23 ( 0.333  0.000  0.333)   [-1.29865634 -0.79213085] [1.21405389 1.97375618]
-#  24 ( 0.333  0.333 -0.333)   [-1.29770499 -0.79046232] [1.23704828 2.00046712]
-#  25 ( 0.333  0.333  0.000)   [-1.29865709 -0.79213149] [1.21405719 1.97375878]
-#  26 ( 0.333  0.333  0.333)   [-1.29770498 -0.79046232] [1.23704826 2.00046713]
-
-#converged SCF energy = -3.33158895465433
-#Analyze output for the gamma point
-#KRHF mulliken_meta
-# ** Mulliken pop alpha/beta on meta-lowdin orthogonal AOs **
-# ** Mulliken pop  **
-#pop of  0He 1s        1.97094
-#pop of  0He 2s        0.03111
-#pop of  1He 1s        1.93819
-#pop of  1He 2s        0.06578
-# ** Mulliken atomic charges  **
-#charge of  0He =     -0.00205
-#charge of  1He =     -0.00397
-#[array([[ 0.23126742-0.0029047 j, -0.26326892-0.00682169j,
-#         1.16379269-0.00292807j,  0.34920021-0.00338418j],
-#       [ 0.42519711+0.02420935j, -0.75799201+0.04684957j,
-#        -1.10019212-0.0450628 j, -0.2740312 +0.27599331j],
-#       [ 0.18550681-0.01756726j,  0.19863157-0.0490722 j,
-#        -0.11467055-0.29053642j,  0.50813597+1.08022103j],
-#       [ 0.4730487 -0.07415497j,  0.78681668-0.13121987j,
-#         0.37664597+0.18258541j, -0.3458082 -0.980555  j]]), array([[ 0.22772779-0.00298994j, -0.25987736-0.00696958j,
-#         1.16450532-0.00315461j,  0.34316984-0.0025693 j],
-#       [ 0.42568706+0.02474679j, -0.76062599+0.04770706j,
-#        -1.09024181-0.0430699 j, -0.27041649+0.27333104j],
-#       [ 0.18294155-0.01749683j,  0.1951743 -0.04913958j,
-#        -0.10921309-0.28695139j,  0.4928214 +1.08714555j],
-#       [ 0.47413988-0.0754532 j,  0.78751487-0.13317444j,
-#         0.36842724+0.17727311j, -0.33075326-0.97774632j]]), array([[ 0.23126742-0.00290452j, -0.26326893-0.00682192j,
-#         1.16379269-0.00292844j,  0.3492002 -0.00338431j],
-#       [ 0.42519712+0.02420911j, -0.75799198+0.04685011j,
-#        -1.10019217-0.04506207j, -0.27403097+0.27599346j],
-#       [ 0.18550682-0.01756713j,  0.19863159-0.04907203j,
-#        -0.11467066-0.29053637j,  0.50813644+1.08022082j],
-#       [ 0.47304867-0.07415517j,  0.78681659-0.13122037j,
-#         0.3766461 +0.1825851 j, -0.34580887-0.98055477j]]), array([[ 0.23126742-0.0029047 j, -0.26326892-0.00682169j,
-#         1.16379269-0.00292807j,  0.34920021-0.00338418j],
-#       [ 0.42519711+0.02420935j, -0.75799201+0.04684957j,
-#        -1.10019212-0.0450628 j, -0.2740312 +0.27599331j],
-#       [ 0.18550681-0.01756726j,  0.19863157-0.0490722 j,
-#        -0.11467055-0.29053642j,  0.50813597+1.08022103j],
-#       [ 0.4730487 -0.07415497j,  0.78681668-0.13121987j,
-#         0.37664597+0.18258541j, -0.3458082 -0.980555  j]]), array([[ 0.22772779-0.00298994j, -0.25987736-0.00696958j,
-#         1.16450532-0.00315461j,  0.34316984-0.0025693 j],
-#       [ 0.42568706+0.02474679j, -0.76062599+0.04770706j,
-#        -1.09024181-0.0430699 j, -0.27041649+0.27333104j],
-#       [ 0.18294155-0.01749683j,  0.1951743 -0.04913958j,
-#        -0.10921309-0.28695139j,  0.4928214 +1.08714555j],
-#       [ 0.47413988-0.0754532 j,  0.78751487-0.13317444j,
-#         0.36842724+0.17727311j, -0.33075326-0.97774632j]]), array([[ 0.23126742-0.00290452j, -0.26326893-0.00682192j,
-#         1.16379269-0.00292844j,  0.3492002 -0.00338431j],
-#       [ 0.42519712+0.02420911j, -0.75799198+0.04685011j,
-#        -1.10019217-0.04506207j, -0.27403097+0.27599346j],
-#       [ 0.18550682-0.01756713j,  0.19863159-0.04907203j,
-#        -0.11467066-0.29053637j,  0.50813644+1.08022082j],
-#       [ 0.47304867-0.07415517j,  0.78681659-0.13122037j,
-#         0.3766461 +0.1825851 j, -0.34580887-0.98055477j]]), array([[ 0.23126742+0.00290452j, -0.26326893+0.00682192j,
-#         1.16379269+0.00292844j,  0.3492002 +0.00338431j],
-#       [ 0.42519712-0.02420911j, -0.75799198-0.04685011j,
-#        -1.10019217+0.04506207j, -0.27403097-0.27599346j],
-#       [ 0.18550682+0.01756713j,  0.19863159+0.04907203j,
-#        -0.11467066+0.29053637j,  0.50813644-1.08022082j],
-#       [ 0.47304867+0.07415517j,  0.78681659+0.13122037j,
-#         0.3766461 -0.1825851 j, -0.34580887+0.98055477j]]), array([[ 0.22772779+0.00298994j, -0.25987736+0.00696958j,
-#         1.16450532+0.00315461j,  0.34316984+0.0025693 j],
-#       [ 0.42568706-0.02474679j, -0.76062599-0.04770706j,
-#        -1.09024181+0.0430699 j, -0.27041649-0.27333104j],
-#       [ 0.18294155+0.01749683j,  0.1951743 +0.04913958j,
-#        -0.10921309+0.28695139j,  0.4928214 -1.08714555j],
-#       [ 0.47413988+0.0754532 j,  0.78751487+0.13317444j,
-#         0.36842724-0.17727311j, -0.33075326+0.97774632j]]), array([[ 0.23126742+0.0029047 j, -0.26326892+0.00682169j,
-#         1.16379269+0.00292807j,  0.34920021+0.00338418j],
-#       [ 0.42519711-0.02420935j, -0.75799201-0.04684957j,
-#        -1.10019212+0.0450628 j, -0.2740312 -0.27599331j],
-#       [ 0.18550681+0.01756726j,  0.19863157+0.0490722 j,
-#        -0.11467055+0.29053642j,  0.50813597-1.08022103j],
-#       [ 0.4730487 +0.07415497j,  0.78681668+0.13121987j,
-#         0.37664597-0.18258541j, -0.3458082 +0.980555  j]]), array([[ 0.23126742+0.00290452j, -0.26326893+0.00682192j,
-#         1.16379269+0.00292844j,  0.3492002 +0.00338431j],
-#       [ 0.42519712-0.02420911j, -0.75799198-0.04685011j,
-#        -1.10019217+0.04506207j, -0.27403097-0.27599346j],
-#       [ 0.18550682+0.01756713j,  0.19863159+0.04907203j,
-#        -0.11467066+0.29053637j,  0.50813644-1.08022082j],
-#       [ 0.47304867+0.07415517j,  0.78681659+0.13122037j,
-#         0.3766461 -0.1825851 j, -0.34580887+0.98055477j]]), array([[ 0.22772779+0.00298994j, -0.25987736+0.00696958j,
-#         1.16450532+0.00315461j,  0.34316984+0.0025693 j],
-#       [ 0.42568706-0.02474679j, -0.76062599-0.04770706j,
-#        -1.09024181+0.0430699 j, -0.27041649-0.27333104j],
-#       [ 0.18294155+0.01749683j,  0.1951743 +0.04913958j,
-#        -0.10921309+0.28695139j,  0.4928214 -1.08714555j],
-#       [ 0.47413988+0.0754532 j,  0.78751487+0.13317444j,
-#         0.36842724-0.17727311j, -0.33075326+0.97774632j]]), array([[ 0.23126742+0.0029047 j, -0.26326892+0.00682169j,
-#         1.16379269+0.00292807j,  0.34920021+0.00338418j],
-#       [ 0.42519711-0.02420935j, -0.75799201-0.04684957j,
-#        -1.10019212+0.0450628 j, -0.2740312 -0.27599331j],
-#       [ 0.18550681+0.01756726j,  0.19863157+0.0490722 j,
-#        -0.11467055+0.29053642j,  0.50813597-1.08022103j],
-#       [ 0.4730487 +0.07415497j,  0.78681668+0.13121987j,
-#         0.37664597-0.18258541j, -0.3458082 +0.980555  j]])]

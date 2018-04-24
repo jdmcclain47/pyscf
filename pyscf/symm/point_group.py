@@ -1,6 +1,12 @@
 import numpy
 from geom import rotation_mat
 from geom import SymmSys
+from pyscf.gto.mole import Mole
+from pyscf.pbc.gto.cell import Cell
+import pyscf.symm.kpoint_symm as kpoint_symm
+import param
+import geom
+import basis as symm_basis
 
 #ROTATION_OPERATOR = {
 #    '1': numpy.array([1, 0, 0],
@@ -42,79 +48,61 @@ from geom import SymmSys
 #
 #}
 
-TOLERANCE = 1e-14
+TOLERANCE = 1e-8
 
-#def pairs_invariant_to_op(op, order=2):
-#    tol = TOLERANCE
-#    coords = rawsys.atoms[:, 1:]
-#    new_coords = numpy.dot(coords, op)
-#    dist = numpy.linalg.norm(coords[:,None] - new_coords[None,:], axis=2)
-#    try:
-#        # Find where the new coordinate and old coordinate differ by less than tolerance.
-#        # Remove all duplicate pairs of equivalent indices.
-#        pairs = [(ix, numpy.where(x < tol)[0][0]) for ix, x in enumerate(dist)]
-#        pairs = numpy.sort(pairs)
-#        unique_pairs = numpy.unique(pairs, axis=0)
-#    except IndexError:  # a zero-value was not found for some index
-#        return False
-#
-#    if (len(numpy.unique(unique_pairs[:,0])) < len(unique_pairs[:,0]) or
-#        len(numpy.unique(unique_pairs[:,1])) < len(unique_pairs[:,1])):
-#        # We have one index equal to more than one other index due to
-#        # two input values being the same... throw error?
-#        raise AssertionError('No one-to-one mapping between old coordinates and new '
-#                             'coordinates under operation; operation, old coordinates =',
-#                             op, coords)
-#
-#    return unique_pairs
-#    #yield all((_vec_in_vecs(x, coords) for x in new_coords))
-
-def pairs_invariant_to_op(symsys, op):
-    tol = TOLERANCE
-    coords = symsys.atoms[:, 1:]
-    new_coords = numpy.dot(coords, op)
-    dist = numpy.linalg.norm(coords[:,None] - new_coords[None,:], axis=2)
-
-    try:
-        # Find where the new coordinate and old coordinate differ by less than tolerance.
-        # Remove all duplicate pairs of equivalent indices.
-        pairs = [(ix, numpy.where(x < tol)[0][0]) for ix, x in enumerate(dist)]
-        unique_pairs = []
-        seen = numpy.zeros(len(coords), dtype=bool)
-        for kpt_idx, mapped_kpt_idx in pairs:
-
-            # Find how each k-point changed when the operation was applied, finding
-            # the subgroup for the given operation.
-            if not seen[kpt_idx]:
-                mapping_history = [kpt_idx,]
-                seen[kpt_idx] = 1
-                next_mapped_kpt_idx = pairs[kpt_idx][1]
-
-                # Keep following the mapping until we reach the original kpoint.
-                while next_mapped_kpt_idx != kpt_idx:
-                    next_kpt_idx, next_mapped_kpt_idx = pairs[next_mapped_kpt_idx]
-                    mapping_history.append(next_kpt_idx)
-                    seen[next_kpt_idx] = 1
-                unique_pairs.append([mapping_history, -1])
-
-    except IndexError:  # np.where failed; one of the original atoms was not mapped onto another
-        return False
-
-    return unique_pairs
-
-def get_stars(kpts, atoms, only_inversion=False):
+def get_unit_cell_d2h_subgroup(kpts, atoms, basis):
     kpts_object = zip(['GHOST']*len(kpts), kpts)
+    print 'kpoints', kpts
     kptsys = SymmSys(kpts_object, recenter_coords=False)
-    atomsys = SymmSys(atoms)
-    if only_inversion:
-        op = -1
-    else:
-        kpt_rot = kptsys.search_possible_rotations()
-        kpt_rot = sorted(kpt_rot, reverse=True, key=lambda x: x[1])
+    atomsys = SymmSys(atoms, recenter_coords=True)
 
-        for zaxis, n in kpt_rot:
-            if atomsys.has_rotation(zaxis, n):
-                op = rotation_mat(zaxis, numpy.pi*2/n)
-                break
-    stars = pairs_invariant_to_op(kptsys, op)
-    return stars
+    kpt_topgroup, kpt_orig, kpt_axes = \
+       geom.detect_symm(kpts_object, recenter_coords=False)
+    kpt_group, kpt_axes = geom.subgroup(kpt_topgroup, kpt_axes)
+    print 'kpoint topgroup =', kpt_topgroup
+    print 'kpoint subgroup =', kpt_group
+    print 'axes', kpt_axes
+
+    atm_topgroup, atm_orig, atm_axes = \
+       geom.detect_symm(atoms)
+    atm_group, atm_axes = geom.subgroup(atm_topgroup, atm_axes)
+    print 'atomic topgroup =', atm_topgroup
+    print 'atomic subgroup =', atm_group
+    print 'axes', atm_axes
+
+    cell_object = []
+    atoms = [[atoms[a][0], atomsys.atoms[a][1:]] for a in range(len(atoms))]
+    [cell_object.append(a) for a in atoms]
+    [cell_object.append(k) for k in kpts_object]
+    cell_topgroup, cell_orig, cell_axes = \
+       geom.detect_symm(cell_object, recenter_coords=False)
+    print 'cell topgroup =', cell_topgroup
+    cell_subgroup, cell_axes = geom.subgroup(cell_topgroup, cell_axes)
+    print 'cell subgroup =', cell_subgroup
+    print 'cell orig', cell_orig
+    print 'cell axes', cell_axes
+    return cell_subgroup, cell_orig, cell_axes
+
+def get_unit_cell_point_group(kpts, atoms, basis):
+    return get_unit_cell_d2h_subgroup(kpts, atoms, basis)
+
+def get_stars(kpts, atoms, basis, only_inversion=False):
+    kpts_object = zip(['GHOST']*len(kpts), kpts)
+    cell_subgroup, cell_orig, cell_axes = get_unit_cell_point_group(kpts, atoms, basis)
+    if not geom.check_given_symm(cell_subgroup, kpts_object, axis=None):
+        print 'symmetry not found!'
+
+    kpt_stars, kpt_ops = geom.symm_identical_atoms(cell_subgroup, kpts_object, recenter_coords=False, return_ops=True, axis=None)
+
+    kpt_inversions = kpoint_symm.get_inversion_pairs(kpts)
+    atom_mol = Cell(atom=atoms, basis=basis).build(a=numpy.eye(3)).to_mol()
+
+    inversion = []
+    basis_mapping = []
+    ao_transformation = []
+    for istar in range(len(kpt_stars)):
+        ao_transformation.append(kpoint_symm.transformation_mapping(atom_mol, kpt_ops[istar]))
+        atm_mapping = kpoint_symm.permute_atoms_by_op(kpt_ops[istar], atoms)
+        basis_mapping.append(kpoint_symm.reorder_basis_idx(atom_mol, atm_mapping))
+
+    return kpt_stars, kpt_ops, kpt_inversions, ao_transformation, basis_mapping, cell_axes
