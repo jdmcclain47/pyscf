@@ -24,6 +24,8 @@ from pyscf.gto.mole import _symbol, _rm_digit, _atom_symbol, _std_symbol, _charg
 from pyscf.gto.mole import conc_env, uncontract
 from pyscf.pbc.gto import basis
 from pyscf.pbc.gto import pseudo
+from pyscf.symm import geom
+from pyscf.symm import kpoint_symm
 from pyscf.pbc.tools import pbc as pbctools
 from pyscf.gto.basis import ALIAS as MOLE_ALIAS
 
@@ -426,7 +428,7 @@ def error_for_ke_cutoff(cell, ke_cutoff):
     return errmax
 
 def get_bounding_sphere(cell, rcut):
-    '''Finds all the lattice points within a sphere of radius rcut.  
+    '''Finds all the lattice points within a sphere of radius rcut.
 
     Defines a parallelipiped given by -N_x <= n_x <= N_x, with x in [1,3]
     See Martin p. 85
@@ -674,7 +676,7 @@ def make_kpts(cell, nks, wrap_around=False, with_gamma_point=True, scaled_center
         scaled_center : (3,) array
             Shift all points in the Monkhorst-pack grid to be centered on
             scaled_center, given as the zeroth index of the returned kpts.
-            Scaled meaning that the k-points are scaled to a grid from 
+            Scaled meaning that the k-points are scaled to a grid from
             [-1,1] x [-1,1] x [-1,1]
 
     Returns:
@@ -813,6 +815,7 @@ class Cell(mole.Mole):
         self.precision = 1.e-8
         self.pseudo = None
         self.dimension = 3
+        self.ibz_symmetry = None
 
 ##################################################
 # These attributes are initialized by build function if not given
@@ -839,8 +842,8 @@ class Cell(mole.Mole):
     def build(self, dump_input=True, parse_arg=True,
               a=None, gs=None, ke_cutoff=None, precision=None, nimgs=None,
               ew_eta=None, ew_cut=None, pseudo=None, basis=None, h=None,
-              dimension=None, rcut= None, ecp=None,
-              *args, **kwargs):
+              dimension=None, rcut= None, ecp=None, ibz_symmetry=None,
+              orig=None, axes=None, *args, **kwargs):
         '''Setup Mole molecule and Cell and initialize some control parameters.
         Whenever you change the value of the attributes of :class:`Cell`,
         you need call this function to refresh the internal data of Cell.
@@ -866,6 +869,7 @@ class Cell(mole.Mole):
         if precision is not None: self.precision = precision
         if rcut is not None: self.rcut = rcut
         if ecp is not None: self.ecp = ecp
+        if ibz_symmetry is not None: self.ibz_symmetry = ibz_symmetry
         if ke_cutoff is not None: self.ke_cutoff = ke_cutoff
 
         assert(self.a is not None)
@@ -891,6 +895,21 @@ class Cell(mole.Mole):
             else:
                 self._pseudo = self.format_pseudo(self.pseudo)
 
+        _a = self.lattice_vectors()
+        if self.ibz_symmetry:
+            _atom = self.format_atom(self.atom, unit=self.unit)
+            self.topgroup, self.orig, self.axes = \
+                kpoint_symm.get_point_group_symmetry(_a, _atom, basis=basis)
+
+            self.subgroup, subgroup_rotation = geom.subgroup(self.topgroup, self.axes)
+            self.axes = subgroup_rotation
+
+        _a = self.lattice_vectors()
+        if np.linalg.det(_a) < 0 and self.dimension == 3:
+            sys.stderr.write('''WARNING!
+  Lattice are not in right-handed coordinate system. This can cause wrong value for some integrals.
+  It's recommended to resort the lattice vectors to\na = %s\n\n''' % _a[[0,2,1]])
+
         # Do regular Mole.build with usual kwargs
         _built = self._built
         mole.Mole.build(self, False, parse_arg, *args, **kwargs)
@@ -898,12 +917,6 @@ class Cell(mole.Mole):
         if self.rcut is None:
             self.rcut = max([self.bas_rcut(ib, self.precision)
                              for ib in range(self.nbas)] + [0])
-
-        _a = self.lattice_vectors()
-        if np.linalg.det(_a) < 0 and self.dimension == 3:
-            sys.stderr.write('''WARNING!
-  Lattice are not in right-handed coordinate system. This can cause wrong value for some integrals.
-  It's recommended to resort the lattice vectors to\na = %s\n\n''' % _a[[0,2,1]])
 
         if self.gs is None:
             if self.ke_cutoff is None:
@@ -1017,11 +1030,14 @@ class Cell(mole.Mole):
         Return 3x3 array in which each row represents one direction of the
         lattice vectors (unit in Bohr)
         '''
+        axes = self.axes
+        orig = self.orig
         if isinstance(self.a, (str, unicode)):
             a = self.a.replace(';',' ').replace(',',' ').replace('\n',' ')
             a = np.asarray([float(x) for x in a.split()]).reshape(3,3)
         else:
             a = np.asarray(self.a, dtype=np.double)
+        a = np.dot(a - orig, axes.T)
         if isinstance(self.unit, (str, unicode)):
             if self.unit.startswith(('B','b','au','AU')):
                 return a
@@ -1060,7 +1076,7 @@ class Cell(mole.Mole):
             scaled_kpts : (nkpts, 3) ndarray of floats
 
         Returns:
-            abs_kpts : (nkpts, 3) ndarray of floats 
+            abs_kpts : (nkpts, 3) ndarray of floats
         '''
         return np.dot(scaled_kpts, self.reciprocal_vectors())
 
@@ -1068,7 +1084,7 @@ class Cell(mole.Mole):
         '''Get scaled k-points, given absolute k-points in 1/Bohr.
 
         Args:
-            abs_kpts : (nkpts, 3) ndarray of floats 
+            abs_kpts : (nkpts, 3) ndarray of floats
 
         Returns:
             scaled_kpts : (nkpts, 3) ndarray of floats
