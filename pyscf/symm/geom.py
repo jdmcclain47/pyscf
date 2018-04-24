@@ -73,7 +73,7 @@ def argsort_coords(coords, decimals=None):
 
     Parameters
     ----------
-    coords : array_like
+    coords : `ndarray`
         `(N,3)` array of coordinates.
     decimals : scalar
         Precision for rounding in sort.
@@ -254,22 +254,11 @@ def align_axes(axes, ref_axes):
     return new_axes
 
 
-def detect_symm(atoms, basis=None, verbose=logger.WARN):
+def detect_symm(atoms, basis=None, recenter_coords=True, verbose=logger.WARN):
     """
-
-    Detect the point group symmetry for a given molecule.
+    Detect the point group symmetry for a given atomic system.
 
     Return group name, charge center, and nex_axis (three rows for x,y,z)
-
-    Parameters
-    ----------
-
-    Returns
-    -------
-
-    Notes
-    -----
-
     """
     if isinstance(verbose, logger.Logger):
         log = verbose
@@ -282,7 +271,7 @@ def detect_symm(atoms, basis=None, verbose=logger.WARN):
 
     # Set up symmetry object to handle all the possible symmetry operations
     # on the input atoms and optional basis set.
-    rawsys = SymmSys(atoms, basis)
+    rawsys = SymmSys(atoms, basis, recenter_coords=recenter_coords)
 
     # Obtain the eigenvalues of the dipole moment of the atomic-charge
     # distribution.
@@ -531,10 +520,10 @@ def subgroup(gpname, axes):
 
 def symm_ops(gpname, axes=None):
     # FIXME: How does gpname enter into this?
-    if axes is not None:
-        raise RuntimeError('TODO: non-standard orientation')
+    #if axes is not None:
+    #    raise RuntimeError('TODO: non-standard orientation')
     op1 = numpy.eye(3)
-    opi = -1
+    opi = -numpy.eye(3)
 
     opc2z = -numpy.eye(3)
     opc2z[2,2] = 1
@@ -556,14 +545,42 @@ def symm_ops(gpname, axes=None):
              'sy' : opcsy,}
     return opdic
 
-def symm_identical_atoms(gpname, atoms):
-    ''' Requires '''
-    # Dooh Coov for linear molecule
+def symm_identical_atoms(gpname, atoms, axis=None, recenter_coords=True, return_ops=False):
+    """
+
+    For a given group, `gpname`, finds all atomic cosets, i.e. atoms that map
+    to one another given the operations of the group.
+
+    Parameters
+    ----------
+    gpname : str
+        Name of group as defined in `param.OPERATOR_TABLE`.
+    atoms : list of (str, (3,) ndarray)
+        List of all atoms in the system, where each atom is defined by a
+        string for type and a set of coordinates.
+    axis: array_like
+        Whether to use a non-standard orientation for applying group operations.
+        Default is z-axis.
+    recenter_coords: bool
+        Whether to recenter the coordinates.  For atomic systems, this will be
+        true.  For finding symmetries of k-points, this may not be desired.
+    return_ops: bool
+        Return operators that map each equivalent atom to one another within the coset.
+
+    Returns
+    -------
+    eql_atom_ids : list of lists
+
+    """
+    if axis is not None:
+        raise RuntimeError('TODO: non-standard orientation')
+
+    # Return equivalent atoms for the lienar molecules with Dooh Coov symmetry.
     if gpname == 'Dooh':
         coords = numpy.array([a[1] for a in atoms], dtype=float)
         idx0 = argsort_coords(coords)
-        coords0 = coords[idx0]
-        opdic = symm_ops(gpname)
+        coords_sorted = coords[idx0]
+        opdic = symm_ops(gpname, axis)
         newc = numpy.dot(coords, opdic['sz'])
         idx1 = argsort_coords(newc)
         dup_atom_ids = numpy.sort((idx0,idx1), axis=0).T
@@ -575,39 +592,68 @@ def symm_identical_atoms(gpname, atoms):
         eql_atom_ids = [[i] for i,a in enumerate(atoms)]
         return eql_atom_ids
 
-    center = mole.charge_center(atoms)
-#    if not numpy.allclose(center, 0, atol=TOLERANCE):
-#        sys.stderr.write('WARN: Molecular charge center %s is not on (0,0,0)\n'
-#                        % center)
-    opdic = symm_ops(gpname)
-    ops = [opdic[op] for op in pyscf.symm.param.OPERATOR_TABLE[gpname]]
+    # if not numpy.allclose(center, 0, atol=TOLERANCE):
+    #     sys.stderr.write('WARN: Molecular charge center %s is not on (0,0,0)\n'
+    #                     % center)
+
+    opdic = symm_ops(gpname, axis)
+    ops = numpy.array([opdic[op] for op in pyscf.symm.param.OPERATOR_TABLE[gpname]])
+    nirrep = len(ops)
     coords = numpy.array([a[1] for a in atoms], dtype=float)
+    if recenter_coords:
+        center = mole.charge_center(atoms)
+        coords -= center
     idx = argsort_coords(coords)
-    coords0 = coords[idx]
+    coords_sorted = coords[idx]
 
     dup_atom_ids = []
+    # Apply operations to all coordinates; these *should* map to other
+    # atomic coordinates if the system is invariant under these operations.
     for op in ops:
         newc = numpy.dot(coords, op)
         idx = argsort_coords(newc)
-        if not numpy.allclose(coords0, newc[idx], atol=TOLERANCE):
-            raise RuntimeError('Symmetry identical atoms not found')
+        if not numpy.allclose(coords_sorted, newc[idx], atol=TOLERANCE):
+            raise RuntimeError('Symmetry identical atoms not found\n\n'
+                               'op = %s\ncoords after op = %s\n'
+                               'coords before op = %s\n' % (op, coords_sorted, newc[idx]))
         dup_atom_ids.append(idx)
 
+    # The group operations should map an atomic idx to a subgroup of the entire system.
+    # Set the generator for this subgroup to have the lowest index.
     dup_atom_ids = numpy.sort(dup_atom_ids, axis=0).T
+
+    # Concatenate all subgroups containing the atomic generator (found from sorting).
     uniq_idx = numpy.unique(dup_atom_ids[:,0], return_index=True)[1]
     eql_atom_ids = dup_atom_ids[uniq_idx]
+
     eql_atom_ids = [list(sorted(set(i))) for i in eql_atom_ids]
+    if return_ops:
+        out_ops_idx = []
+        # For each subgroup, find which atoms the atomic generator maps to.
+        for icoset, coset in enumerate(eql_atom_ids):
+            generating_coord = coords[coset[0]]
+            dup_atoms = []
+
+            newc = numpy.dot(generating_coord, ops)
+            coords_diff = numpy.linalg.norm(newc[:, None] - coords[coset][None, :], axis=2)
+
+            op_atom_mapping = numpy.argsort(coords_diff, axis=1)[:, 0]
+            uniq_idx = numpy.unique(op_atom_mapping, return_index=True)[1]
+            out_ops_idx.append(ops[uniq_idx])
+        return eql_atom_ids, out_ops_idx
     return eql_atom_ids
 
-def check_given_symm(gpname, atoms, basis=None):
-# more strict than symm_identical_atoms, we required not only the coordinates
-# match, but also the symbols and basis functions
+def check_given_symm(gpname, atoms, basis=None, axis=None, recenter_coords=True):
+    # more strict than symm_identical_atoms, we required not only the coordinates
+    # match, but also the symbols and basis functions
+    if axis is not None:
+        raise RuntimeError('TODO: non-standard orientation')
 
-#FIXME: compare the basis set when basis is given
+    #FIXME: compare the basis set when basis is given
     if gpname == 'Dooh':
         coords = numpy.array([a[1] for a in atoms], dtype=float)
         if numpy.allclose(coords[:,:2], 0, atol=TOLERANCE):
-            opdic = symm_ops(gpname)
+            opdic = symm_ops(gpname, axis)
             rawsys = SymmSys(atoms, basis)
             return rawsys.has_icenter() and numpy.allclose(rawsys.charge_center, 0)
         else:
@@ -616,9 +662,9 @@ def check_given_symm(gpname, atoms, basis=None):
         coords = numpy.array([a[1] for a in atoms], dtype=float)
         return numpy.allclose(coords[:,:2], 0, atol=TOLERANCE)
 
-    opdic = symm_ops(gpname)
+    opdic = symm_ops(gpname, axis)
     ops = [opdic[op] for op in pyscf.symm.param.OPERATOR_TABLE[gpname]]
-    rawsys = SymmSys(atoms, basis)
+    rawsys = SymmSys(atoms, basis, recenter_coords=recenter_coords)
     for lst in rawsys.atomtypes.values():
         coords = rawsys.atoms[lst,1:]
         idx = argsort_coords(coords)
@@ -915,7 +961,6 @@ class SymmSys(object):
                 nmax = n
                 cmax = cn
         return cmax, nmax
-
 
 def _normalize(vecs):
     vecs = numpy.asarray(vecs)
