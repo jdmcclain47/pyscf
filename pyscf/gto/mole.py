@@ -1410,7 +1410,10 @@ def charge_center(atoms, charges=None, coords=None):
         charges = numpy.array([_charge(a[0]) for a in atoms])
     if coords is None:
         coords = numpy.array([a[1] for a in atoms], dtype=float)
-    rbar = numpy.einsum('i,ij->j', charges, coords)/charges.sum()
+    charges_sum = charges.sum()
+    if charges_sum == 0.0:
+        return 0.0
+    rbar = numpy.einsum('i,ij->j', charges, coords)/charges_sum
     return rbar
 
 def mass_center(atoms):
@@ -1593,6 +1596,8 @@ class Mole(lib.StreamObject):
         self.symmetry = False
         self.symmetry_subgroup = None
         self.cart = False  # Using cartesian GTO (6d,10f,15g)
+        self.orig = 0
+        self.axes = numpy.eye(3)
 
 # Save inputs
 # self.atom = [(symb/nuc_charge, (coord(Angstrom):0.,0.,0.)), ...]
@@ -1684,7 +1689,7 @@ class Mole(lib.StreamObject):
               verbose=None, output=None, max_memory=None,
               atom=None, basis=None, unit=None, nucmod=None, ecp=None,
               charge=None, spin=None, symmetry=None, symmetry_subgroup=None,
-              cart=None):
+              cart=None, orig=None, axes=None):
         '''Setup moleclue and initialize some control parameters.  Whenever you
         change the value of the attributes of :class:`Mole`, you need call
         this function to refresh the internal data of Mole.
@@ -1731,6 +1736,8 @@ class Mole(lib.StreamObject):
         if ecp is not None: self.ecp = ecp
         if charge is not None: self.charge = charge
         if spin is not None: self.spin = spin
+        if orig is not None: self.orig = orig
+        if axes is not None: self.axes = axes
         if symmetry is not None: self.symmetry = symmetry
         if symmetry_subgroup is not None: self.symmetry_subgroup = symmetry_subgroup
         if cart is not None: self.cart = cart
@@ -1748,6 +1755,7 @@ class Mole(lib.StreamObject):
             self.check_sanity()
 
         self._atom = self.format_atom(self.atom, unit=self.unit)
+        self._atom = self.format_atom(self._atom, self.orig, self.axes, unit='Bohr')
         uniq_atoms = set([a[0] for a in self._atom])
 
         if isinstance(self.basis, (str, unicode, tuple, list)):
@@ -2047,7 +2055,7 @@ Note when symmetry attributes is assigned, the molecule needs to be put in the p
     set_range_coulomb_ = set_range_coulomb  # for backward compatibility
 
     def set_f12_zeta(self, zeta):
-        '''Set zeta for YP exp(-zeta r12)/r12 or STG exp(-zeta r12) type integrals  
+        '''Set zeta for YP exp(-zeta r12)/r12 or STG exp(-zeta r12) type integrals
         '''
         self._env[PTR_F12_ZETA] = zeta
 
