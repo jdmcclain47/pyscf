@@ -126,6 +126,7 @@ def get_fock(mf, h1e_kpts, s_kpts, vhf_kpts, dm_kpts, cycle=-1, diis=None,
     if abs(level_shift_factor) > 1e-4:
         f_kpts = [hf.level_shift(s, dm_kpts[k], f_kpts[k], level_shift_factor)
                   for k, s in enumerate(s_kpts)]
+    f_kpts = mf.symmetrize_mat(f_kpts)
 
     return lib.asarray(f_kpts)
 
@@ -209,12 +210,11 @@ def energy_elec(mf, dm_kpts=None, h1e_kpts=None, vhf_kpts=None):
     if vhf_kpts is None: vhf_kpts = mf.get_veff(mf.cell, dm_kpts)
 
     nkpts = len(dm_kpts)
-    #dm_kpts  = dm_kpts[mf.irr_kpts_idx]
-    #h1e_kpts = h1e_kpts[mf.irr_kpts_idx]
-    #vhf_kpts = vhf_kpts[mf.irr_kpts_idx]
+    dm_kpts  = dm_kpts[mf.irr_kpts_idx]
+    h1e_kpts = h1e_kpts[mf.irr_kpts_idx]
+    vhf_kpts = vhf_kpts[mf.irr_kpts_idx]
 
-    weighted_dm_kpts = 1./nkpts * dm_kpts
-    #weighted_dm_kpts = np.einsum('w,wij->wij', mf.kpt_weights, dm_kpts)
+    weighted_dm_kpts = np.einsum('w,wij->wij', mf.kpt_weights, dm_kpts)
     e1 = np.einsum('kij,kji', weighted_dm_kpts, h1e_kpts)
     e_coul = np.einsum('kij,kji', weighted_dm_kpts, vhf_kpts) * 0.5
     if abs(e_coul.imag > 1.e-7):
@@ -405,6 +405,121 @@ class KSCF(hf.SCF):
         #if self.exxdiv == 'vcut_ws':
         #    self.precompute_exx()
 
+    def symmetrize_mat(self, mat, unfold_ibz=False):
+        if unfold_ibz:
+            nkpts = len(self.kpts)
+        else:
+            nkpts = len(mat)
+
+        shape = (nkpts,) + mat.shape[1:]
+        symmetrized_mat = np.zeros(shape, dtype=mat.dtype)
+
+        for icoset, coset in enumerate(self.kpt_stars):
+            if len(coset) == 1:  # Only contains irreducible point
+                reducible_kpt = coset[0]
+                if unfold_ibz:
+                    irr_kpt_idx = self.irr_kpts_idx.index(reducible_kpt)
+                else:
+                    irr_kpt_idx = reducible_kpt
+
+                symmetrized_mat[reducible_kpt] = mat[irr_kpt_idx]
+                continue
+
+            irr_kpoint = coset[0]
+            for kpt_idx_in_star, reducible_kpt in enumerate(coset):
+                if unfold_ibz:
+                    irr_kpt_idx = self.irr_kpts_idx.index(irr_kpoint)
+                else:
+                    irr_kpt_idx = irr_kpoint
+
+                if kpt_idx_in_star == 0:  # Skip over irreducible point
+                    reducible_kpt = coset[0]
+                    if unfold_ibz:
+                        irr_kpt_idx = self.irr_kpts_idx.index(reducible_kpt)
+                    else:
+                        irr_kpt_idx = reducible_kpt
+
+                    symmetrized_mat[reducible_kpt] = mat[irr_kpt_idx]
+                    continue
+
+                # Check if this is an inversion
+                if not self.inv_list[reducible_kpt][2]:
+                    # Get the transformation to orbitals and the rearrangement of orbitals
+                    transformation = self.ao_transformation[icoset][kpt_idx_in_star]
+                    basis_mapping = self.basis_mapping[icoset][kpt_idx_in_star]
+
+                    transformation = transformation[basis_mapping, :]
+                    symmetrized_mat[reducible_kpt] = reduce(np.dot,
+                        (transformation.T.conj(), mat[irr_kpoint], transformation))
+
+        # Do inversion list last
+        for inv in self.inv_list:
+            if inv[2]:  # Is inversion
+                irr_kpt_idx = inv[1]
+                reducible_kpt = inv[0]
+                symmetrized_mat[reducible_kpt] = \
+                    np.conj(symmetrized_mat[irr_kpt_idx])
+        return symmetrized_mat
+
+    def symmetrize_mo_coeff(self, mo_coeff, mo_eig=None, unfold_ibz=False):
+        if unfold_ibz:
+            nkpts = len(self.kpts)
+        else:
+            nkpts = len(mo_coeff)
+
+        symmetrized_mo_coeff = [0] * nkpts
+        if mo_eig is not None:
+            symmetrized_mo_eig = [0] * nkpts
+
+        for icoset, coset in enumerate(self.kpt_stars):
+            if len(coset) == 1:  # Only contains irreducible point
+                reducible_kpt = coset[0]
+                if unfold_ibz:
+                    irr_kpt_idx = self.irr_kpts_idx.index(reducible_kpt)
+                else:
+                    irr_kpt_idx = reducible_kpt
+
+                symmetrized_mo_coeff[reducible_kpt] = mo_coeff[irr_kpt_idx]
+                if mo_eig is not None:
+                    symmetrized_mo_eig[reducible_kpt] = mo_eig[irr_kpt_idx]
+                continue
+
+            irr_kpoint = coset[0]
+            for kpt_idx_in_star, reducible_kpt in enumerate(coset):
+                if unfold_ibz:
+                    irr_kpt_idx = self.irr_kpts_idx.index(irr_kpoint)
+                else:
+                    irr_kpt_idx = irr_kpoint
+
+                if mo_eig is not None:
+                    symmetrized_mo_eig[reducible_kpt] = mo_eig[irr_kpt_idx]
+
+                if kpt_idx_in_star == 0:  # Skip over irreducible point
+                    symmetrized_mo_coeff[reducible_kpt] = mo_coeff[irr_kpt_idx]
+                    continue
+
+                # Check if this is an inversion
+                if not self.inv_list[reducible_kpt][2]:
+                    # Get the transformation to orbitals and the rearrangement of orbitals
+                    transformation = self.ao_transformation[icoset][kpt_idx_in_star]
+                    basis_mapping = self.basis_mapping[icoset][kpt_idx_in_star]
+
+                    transformation = transformation[basis_mapping, :]
+                    symmetrized_mo_coeff[reducible_kpt] = np.dot(transformation, mo_coeff[irr_kpt_idx])
+
+        # Do inversion list last
+        for inv in self.inv_list:
+            if inv[2]:  # Is inversion
+                irr_kpt_idx = inv[1]
+                reducible_kpt = inv[0]
+                symmetrized_mo_coeff[reducible_kpt] = \
+                    np.conj(symmetrized_mo_coeff[irr_kpt_idx])
+
+        if mo_eig is None:
+            return symmetrized_mo_coeff
+
+        return symmetrized_mo_coeff, symmetrized_mo_eig
+
     def get_init_guess(self, cell=None, key='minao'):
         if cell is None:
             cell = self.cell
@@ -450,7 +565,7 @@ class KSCF(hf.SCF):
 
     def get_hcore(self, cell=None, kpts=None):
         if cell is None: cell = self.cell
-        if kpts is None: kpts = self.kpts
+        if kpts is None: kpts = self.irr_kpts
         if cell.pseudo:
             nuc = lib.asarray(self.with_df.get_pp(kpts))
         else:
@@ -458,17 +573,7 @@ class KSCF(hf.SCF):
         if len(cell._ecpbas) > 0:
             nuc += lib.asarray(ecp.ecp_int(cell, kpts))
         t = lib.asarray(cell.pbc_intor('int1e_kin_sph', 1, 1, kpts))
-        hcore = nuc + t
-
-        #hcore = []
-        ## Unfold irreducible k-points into the full k-point array
-        #for irr_kpt, kpt, _ in self.kpt_star_weights:
-        #    if irr_kpt == kpt:
-        #        hcore.append(irr_transform(irr_hcore[irr_kpt,:,:], op=1))
-        #    else:
-        #        hcore.append(irr_transform(irr_hcore[irr_kpt,:,:], op=-1))
-
-        hcore = lib.asarray(hcore)
+        hcore = self.symmetrize_mat(nuc + t, unfold_ibz=True)
         return hcore
 
     get_ovlp = get_ovlp
@@ -480,9 +585,11 @@ class KSCF(hf.SCF):
     def get_j(self, cell=None, dm_kpts=None, hermi=1, kpts=None, kpts_band=None):
         if cell is None: cell = self.cell
         if kpts is None: kpts = self.kpts
+        if kpts_band is None: kpts_band = self.irr_kpts
         if dm_kpts is None: dm_kpts = self.make_rdm1()
         cpu0 = (time.clock(), time.time())
         vj = self.with_df.get_jk(dm_kpts, hermi, kpts, kpts_band, with_k=False)[0]
+        vj = self.symmetrize_mat(vj, unfold_ibz=True)
         logger.timer(self, 'vj', *cpu0)
         return vj
 
@@ -492,10 +599,13 @@ class KSCF(hf.SCF):
     def get_jk(self, cell=None, dm_kpts=None, hermi=1, kpts=None, kpts_band=None):
         if cell is None: cell = self.cell
         if kpts is None: kpts = self.kpts
+        if kpts_band is None: kpts_band = self.irr_kpts
         if dm_kpts is None: dm_kpts = self.make_rdm1()
         cpu0 = (time.clock(), time.time())
         vj, vk = self.with_df.get_jk(dm_kpts, hermi, self.kpts, kpts_band,
                                      exxdiv=self.exxdiv)
+        vj = self.symmetrize_mat(vj, unfold_ibz=True)
+        vk = self.symmetrize_mat(vk, unfold_ibz=True)
         logger.timer(self, 'vj and vk', *cpu0)
         return vj, vk
 
@@ -524,35 +634,16 @@ class KSCF(hf.SCF):
 
     def eig(self, h_kpts, s_kpts):
         nkpts = len(h_kpts)
-        eig_kpts = []
-        mo_coeff_kpts = []
+        irr_nkpts = len(self.irr_kpts)
+        irr_eig_kpts = []
+        irr_mo_coeff_kpts = []
 
-        for k in range(nkpts):
+        for k in self.irr_kpts_idx:
             e, c = self._eigh(h_kpts[k], s_kpts[k])
-            eig_kpts.append(e)
-            mo_coeff_kpts.append(c)
+            irr_eig_kpts.append(e)
+            irr_mo_coeff_kpts.append(c)
 
-        for icoset, coset in enumerate(self.kpt_stars):
-            if len(coset) == 1:  # Nothing to do here!
-                continue
-
-            irr_kpoint = coset[0]
-            for kpt_idx_in_star, reducible_kpt in enumerate(coset):
-                if kpt_idx_in_star == 0:
-                    continue
-
-                # Check if this is an inversion
-                if self.inv_list[reducible_kpt][2]:
-                    inv_kpoint = self.inv_list[reducible_kpt][1]
-                    mo_coeff_kpts[reducible_kpt] = np.conj(mo_coeff_kpts[inv_kpoint])
-                else:
-                    # Get the transformation to orbitals and the rearrangement of orbitals
-                    transformation = self.ao_transformation[icoset][kpt_idx_in_star]
-                    basis_mapping = self.basis_mapping[icoset][kpt_idx_in_star]
-
-                    mo_coeff_kpts[reducible_kpt] = np.dot(transformation, mo_coeff_kpts[irr_kpoint])
-                    mo_coeff_kpts[reducible_kpt] = mo_coeff_kpts[reducible_kpt][basis_mapping, :]
-
+        mo_coeff_kpts, eig_kpts = self.symmetrize_mo_coeff(irr_mo_coeff_kpts, irr_eig_kpts, unfold_ibz=True)
         return eig_kpts, mo_coeff_kpts
 
     def make_rdm1(self, mo_coeff_kpts=None, mo_occ_kpts=None):

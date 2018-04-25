@@ -43,22 +43,12 @@ def get_j_kpts(mydf, dm_kpts, hermi=1, kpts=np.zeros((1,3)), kpts_band=None):
     coulG = tools.get_coulG(cell, gs=gs)
     ngs = len(coulG)
 
-    kpt_weights = [1./nkpts] * nkpts
-    #if (not hasattr(mydf, 'kpt_weights') or
-    #   (hasattr(mydf, 'kpt_weights') and mydf.kpt_weights is None)):
-    #    kpt_weights = [1./nkpts] * nkpts
-    #else:
-    #    kpt_weights = mydf.kpt_weights
-
-    # Contruct real space density at each k-point.
+    # Contruct real space density contribution from all k-points
+    # TODO: Symmetrize density (optional) if we are using symmetry
     vR = rhoR = np.zeros((nset,ngs))
     for k, aoR in mydf.aoR_loop(gs, kpts):
         for i in range(nset):
             rhoR[i] += numint.eval_rho(cell, aoR, dms[i,k])
-            #print 'k, w, val', kpts[k], kpt_weights[k], numint.eval_rho(cell, aoR, dms[i,k])[:10]
-            #print 'k, w, val', kpts[k], kpt_weights[k], aoR[:10,3]
-
-    #exit()
 
     # Construct real space potential
     for i in range(nset):
@@ -69,15 +59,14 @@ def get_j_kpts(mydf, dm_kpts, hermi=1, kpts=np.zeros((1,3)), kpts_band=None):
     # Construct coulomb potential at each band
     kpts_band, input_band = _format_kpts_band(kpts_band, kpts), kpts_band
     nband = len(kpts_band)
-    weight = cell.vol / ngs
+    weight = 1. / nkpts * cell.vol / ngs
     if gamma_point(kpts_band):  # no imaginary part
         vj_kpts = np.empty((nset,nband,nao,nao))
     else:
         vj_kpts = np.empty((nset,nband,nao,nao), dtype=np.complex128)
     for k, aoR in mydf.aoR_loop(gs, kpts_band):
         for i in range(nset):
-            vj_kpts[i,k] = kpt_weights[k] * weight * lib.dot(aoR.T.conj()*vR[i], aoR)
-            print 'k, w, val', kpts[k], kpt_weights[k], vj_kpts[i,k][:10]
+            vj_kpts[i,k] = weight * lib.dot(aoR.T.conj()*vR[i], aoR)
 
     return _format_jks(vj_kpts, dm_kpts, input_band, kpts)
 
