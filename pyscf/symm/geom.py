@@ -697,7 +697,6 @@ class SymmSys(object):
         fake_chgs = []
         idx = []
         for k, lst in self.atomtypes.items():
-            #print "K, lst = ", k, lst
             idx.append(lst)
             coords.append([atoms[i][1] for i in lst])
             ksymb = mole._rm_digit(k)
@@ -765,8 +764,14 @@ class SymmSys(object):
         for idx in self.group_atoms_by_distance:
             coords = self.atoms[idx, 1:]
             new_coords = numpy.dot(coords, op)
-# FIXME: compare whehter two sets of coordinates are identical
             yield all((_vec_in_vecs(x, coords) for x in new_coords))
+
+    def symmetric_for(self, op):
+        for lst in self.group_atoms_by_distance:
+            r0 = self.atoms[lst,1:]
+            r1 = numpy.dot(r0, op)
+# FIXME: compare whehter two sets of coordinates are identical
+            yield all((_vec_in_vecs(x, r0) for x in r1))
 
     def has_icenter(self):
         return all(self.invariant_to_op(-1))
