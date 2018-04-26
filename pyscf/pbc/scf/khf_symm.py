@@ -341,6 +341,7 @@ class KSCF(hf.SCF):
                 self.inv_list, self.ao_transformation, self.basis_mapping, self.symm_axis = \
                 get_stars(self.kpts, self.cell._atom, self.cell.basis, only_inversion=False)
         self.with_df.kpt_stars = self.kpt_stars
+        logger.info(self, 'K-point stars = %s', self.kpt_stars)
 
         self.kpt_weights = get_kpt_weights(self.kpt_stars)
         self.with_df.kpt_weights = self.kpt_weights

@@ -14,7 +14,8 @@ from pyscf.pbc.scf import khf_symm
 from pyscf.pbc.scf import kuhf
 import pyscf.pbc.tools
 
-TOLERANCE = 1e-8
+#TOLERANCE = 1e-8
+TOLERANCE = 1e-5
 
 def make_diamond_primitive(ngs, with_symmetry):
     cell = pbcgto.Cell()
@@ -31,7 +32,7 @@ def make_diamond_primitive(ngs, with_symmetry):
 
     cell.precision = TOLERANCE
     cell.verbose = 9
-    cell.output = '/dev/null'
+    #cell.output = '/dev/null'
     cell.build()
     return cell
 
@@ -76,6 +77,9 @@ def make_d2h_primitive(ngs, with_symmetry):
     return cell
 
 class KnowValues(unittest.TestCase):
+    def __init__(self):
+        pass
+
     def _test_d2h(self, nk=[2,2,2], with_gamma_point=True, with_symmetry=False, only_coulomb=False):
         cell = make_d2h_primitive(24, with_symmetry)
 
@@ -108,6 +112,7 @@ class KnowValues(unittest.TestCase):
             mf = khf.KRHF(cell, my_kpts)
 
         if only_coulomb:
+            #pass
             def get_jk(*args):
                 vj = mf.get_j(*args)
                 vk = 0.0 * vj
@@ -119,8 +124,8 @@ class KnowValues(unittest.TestCase):
         e = mf.kernel()
         return e
 
-    def _test_zincblende(self, nk=[2,2,2], with_gamma_point=True, with_symmetry=False, only_coulomb=False):
-        cell = make_gaas_primitive(24, with_symmetry)
+    def _test_zincblende(self, ng=24, nk=[2,2,2], with_gamma_point=True, with_symmetry=False, only_coulomb=False):
+        cell = make_gaas_primitive(ng, with_symmetry)
 
         my_kpts = cell.make_kpts(nk, with_gamma_point=with_gamma_point)
         if with_symmetry:
@@ -143,19 +148,27 @@ class KnowValues(unittest.TestCase):
     def test_zincblende_222_without_gamma(self):
         nk = [2, 2, 2]
         e = -78.4906715912
-        e_symm = self._test_zincblende(nk=nk, with_gamma_point=False, with_symmetry=True)
+        e_symm = self._test_zincblende(ng=7, nk=nk, with_gamma_point=False, with_symmetry=True)
+        self.assertAlmostEqual(e_symm, e, 8)
         #print 'energy (symmetry) = ', e_symm
 
     def test_zincblende_333_without_gamma(self):
         nk = [3, 3, 3]
         e = -78.4417504051
         e_symm = self._test_zincblende(nk=nk, with_gamma_point=False, with_symmetry=True)
+        self.assertAlmostEqual(e_symm, e, 8)
         #print 'energy (symmetry) = ', e_symm
 
     def test_fcc_222_without_gamma_only_coulomb(self):
         nk = [2, 2, 2]
-        e = self._test_fcc(nk=nk, with_gamma_point=False, with_symmetry=True, only_coulomb=False)
-        e_symm = self._test_fcc(nk=nk, with_gamma_point=False, with_symmetry=True, only_coulomb=True)
+        e = -7.87042791355
+        e_symm = self._test_fcc(ng=14, nk=nk, with_gamma_point=False, with_symmetry=True, only_coulomb=True)
+        self.assertAlmostEqual(e_symm, e, 8)
+
+    def test_fcc_333_without_gamma_only_coulomb(self):
+        nk = [3, 3, 3]
+        e = -7.85029241609
+        e_symm = self._test_fcc(ng=7, nk=nk, with_gamma_point=False, with_symmetry=True, only_coulomb=True)
         self.assertAlmostEqual(e_symm, e, 8)
 
     def test_fcc_222_without_gamma(self):
@@ -187,4 +200,6 @@ class KnowValues(unittest.TestCase):
 
 if __name__ == '__main__':
     print("Full Tests for pbc.scf.khf_symm")
+    k = KnowValues()
+    k.test_fcc_222_without_gamma_only_coulomb()
     unittest.main()
