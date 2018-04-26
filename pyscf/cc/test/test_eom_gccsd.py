@@ -94,6 +94,17 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(e[0], 0.42789089871467728, 5)
         self.assertAlmostEqual(e[1], 0.42789089871467728, 5)
         self.assertAlmostEqual(e[2], 0.50226873136932748, 5)
+        # Degeneracies between spin-orbitals and presence of +/- 1's means that
+        # only the sum of the v's will be invariant
+        self.assertAlmostEqual(abs(v[2][6]) + abs(v[2][7]), 0.97504865931789664, 5)
+
+        le,lv = myeom.ipccsd(nroots=3, left=True)
+        self.assertAlmostEqual(le[0], 0.42789089871467728, 5)
+        self.assertAlmostEqual(le[1], 0.42789089871467728, 5)
+        self.assertAlmostEqual(le[2], 0.50226873136932748, 5)
+        self.assertAlmostEqual(abs(lv[2][6]) + abs(lv[2][7]), 0.9651775154470675, 5)
+
+        self.assertTrue(numpy.allclose(e, le))
 
     def test_ipccsd_koopmans(self):
         e,v = mycc.ipccsd(nroots=3, koopmans=True)
@@ -116,6 +127,17 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(e[0], 0.19050592141957523, 6)
         self.assertAlmostEqual(e[1], 0.19050592141957523, 6)
         self.assertAlmostEqual(e[2], 0.28345228596676159, 6)
+        # Degeneracies between spin-orbitals and presence of +/- 1's means that
+        # only the sum of the v's will be invariant
+        self.assertAlmostEqual(abs(v[2][2]) + abs(v[2][3]), 0.9880169308794116, 5)
+
+        le,lv = myeom.eaccsd(nroots=3, left=True)
+        self.assertAlmostEqual(le[0], 0.19050592141957523, 6)
+        self.assertAlmostEqual(le[1], 0.19050592141957523, 6)
+        self.assertAlmostEqual(le[2], 0.28345228596676159, 6)
+        self.assertAlmostEqual(abs(lv[2][2]) + abs(lv[2][3]), 0.9863373359192341, 5)
+
+        self.assertTrue(numpy.allclose(e, le))
 
     def test_eaccsd_koopmans(self):
         e,v = mycc.eaccsd(nroots=3, koopmans=True)

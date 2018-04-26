@@ -41,6 +41,7 @@ def amplitudes_to_vector_ip(r1, r2):
     return np.hstack((r1, r2[np.tril_indices(nocc, -1)].ravel()))
 
 def ipccsd_matvec(eom, vector, imds=None, diag=None):
+    '''IP-CCSD right eigenvector equation'''
     # Ref: Tu, Wang, and Li, J. Chem. Phys. 136, 174102 (2012) Eqs.(8)-(9)
     if imds is None: imds = eom.make_imds()
     nocc = eom.nocc
@@ -64,7 +65,31 @@ def ipccsd_matvec(eom, vector, imds=None, diag=None):
     vector = amplitudes_to_vector_ip(Hr1, Hr2)
     return vector
 
+def lipccsd_matvec(eom, vector, imds=None, diag=None):
+    if imds is None: imds = eom.make_imds()
+    nocc = eom.nocc
+    nmo = eom.nmo
+    r1, r2 = vector_to_amplitudes_ip(vector, nmo, nocc)
+
+    Hr1 = -lib.einsum('mi,i->m', imds.Foo, r1)
+    Hr1 += -0.5 * lib.einsum('maji,ija->m', imds.Wovoo, r2)
+
+    Hr2 = lib.einsum('me,i->mie', imds.Fov, r1)
+    Hr2 -= lib.einsum('ie,m->mie', imds.Fov, r1)
+    Hr2 += -lib.einsum('nmie,i->mne', imds.Wooov, r1)
+    Hr2 += lib.einsum('ae,ija->ije', imds.Fvv, r2)
+    tmp1 = lib.einsum('mi,ija->mja', imds.Foo, r2)
+    Hr2 += (-tmp1 + tmp1.transpose(1, 0, 2))
+    Hr2 += 0.5 * lib.einsum('mnij,ija->mna', imds.Woooo, r2)
+    tmp2 = lib.einsum('maei,ija->mje', imds.Wovvo, r2)
+    Hr2 += (tmp2 - tmp2.transpose(1, 0, 2))
+    Hr2 += 0.5 * lib.einsum('mnef,ija,ijae->mnf', imds.Woovv, r2, imds.t2)
+
+    vector = amplitudes_to_vector_ip(Hr1, Hr2)
+    return vector
+
 def ipccsd_diag(eom, imds=None):
+    '''Diagonal part of the IP-CCSD matrix, for preconditioning'''
     if imds is None: imds = eom.make_imds()
     t1, t2 = imds.t1, imds.t2
     nocc, nvir = t1.shape
@@ -89,7 +114,7 @@ def ipccsd_diag(eom, imds=None):
 
 class EOMIP(eom_rccsd.EOMIP):
     matvec = ipccsd_matvec
-    l_matvec = None
+    l_matvec = lipccsd_matvec
     get_diag = ipccsd_diag
     ipccsd_star = None
 
@@ -134,6 +159,7 @@ def eaccsd_matvec(eom, vector, imds=None, diag=None):
     if imds is None: imds = eom.make_imds()
     nocc = eom.nocc
     nmo = eom.nmo
+    nvir = nmo - nocc
     r1, r2 = vector_to_amplitudes_ea(vector, nmo, nocc)
 
     # Eq. (30)
@@ -147,10 +173,38 @@ def eaccsd_matvec(eom, vector, imds=None, diag=None):
     Hr2 -= lib.einsum('lj,lab->jab', imds.Foo, r2)
     tmp2 = lib.einsum('lbdj,lad->jab', imds.Wovvo, r2)
     Hr2 += tmp2 - tmp2.transpose(0,2,1)
-    Hr2 += 0.5*lib.einsum('abcd,jcd->jab', imds.Wvvvv, r2)
+    for a in range(nvir):
+        Hr2[:, a, :] += 0.5*lib.einsum('bcd,jcd->jb', imds.Wvvvv[a], r2)
     Hr2 -= 0.5*lib.einsum('klcd,lcd,kjab->jab', imds.Woovv, r2, imds.t2)
 
     vector = amplitudes_to_vector_ea(Hr1, Hr2)
+    return vector
+
+def leaccsd_matvec(eom, vector, imds=None, diag=None):
+    # Ref: Nooijen and Bartlett, J. Chem. Phys. 102, 3629 (1994) Eqs.(32)-(33)
+    if imds is None: imds = eom.make_imds()
+    nocc = eom.nocc
+    nmo = eom.nmo
+    nvir = nmo - nocc
+    r1, r2 = vector_to_amplitudes_ea(vector, nmo, nocc)
+
+    # Eq. (32)
+    Hr1 = lib.einsum('ac,a->c',imds.Fvv,r1)
+    Hr1 += 0.5*lib.einsum('abcj,jab->c',imds.Wvvvo,r2)
+    # Eq. (33)
+    Hr2 = lib.einsum('alcd,a->lcd',imds.Wvovv,r1)
+    Hr2 += lib.einsum('ld,a->lad',imds.Fov,r1)
+    Hr2 -= lib.einsum('la,d->lad',imds.Fov,r1)
+    tmp1 = lib.einsum('ac,jab->jcb',imds.Fvv,r2)
+    Hr2 += (tmp1 - tmp1.transpose(0,2,1))
+    Hr2 += -lib.einsum('lj,jab->lab',imds.Foo,r2)
+    tmp2 = lib.einsum('lbdj,jab->lad',imds.Wovvo,r2)
+    Hr2 += (tmp2 - tmp2.transpose(0,2,1))
+    for a in range(nvir):
+        Hr2 += 0.5*lib.einsum('bcd,jb->jcd',imds.Wvvvv[a],r2[:,a,:])
+    Hr2 += -0.5*lib.einsum('klcd,jab,kjab->lcd',imds.Woovv,r2,imds.t2)
+
+    vector = amplitudes_to_vector_ea(Hr1,Hr2)
     return vector
 
 def eaccsd_diag(eom, imds=None):
@@ -179,7 +233,7 @@ def eaccsd_diag(eom, imds=None):
 
 class EOMEA(eom_rccsd.EOMEA):
     matvec = eaccsd_matvec
-    l_matvec = None
+    l_matvec = leaccsd_matvec
     get_diag = eaccsd_diag
     eaccsd_star = None
 
