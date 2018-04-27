@@ -478,7 +478,7 @@ def eaccsd_star(eom, eaccsd_evals, eaccsd_evecs, leaccsd_evecs,
 
         tmp = lib.einsum('c,ijab->ijabc',l1,oovv)
         lijabc = pabc(tmp)
-        tmp = lib.einsum('jima,mcb->ijabc',ooov,l2)
+        tmp = lib.einsum('jima,mbc->ijabc',ooov,l2)
         lijabc += pabc(tmp)
         tmp = lib.einsum('ieab,jce->ijabc',ovvv,l2)
         tmp = pabc(tmp)
