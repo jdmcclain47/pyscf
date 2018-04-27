@@ -287,9 +287,8 @@ def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs, eris=None):
     fock = eris.fock
     nocc, nvir = t1.shape
 
-    fov = fock[:nocc,nocc:]
-    foo = fock[:nocc,:nocc]
-    fvv = fock[nocc:,nocc:]
+    foo = fock[:nocc,:nocc].diagonal()
+    fvv = fock[nocc:,nocc:].diagonal()
 
     oovv = _cp(eris.ovov).transpose(0,2,1,3)
     ovvv = _cp(eris.get_ovvv()).transpose(0,2,1,3)
@@ -300,10 +299,9 @@ def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs, eris=None):
     vvvo = ovvv.transpose(3,2,1,0).conj()
     oooo = _cp(eris.oooo).transpose(0,2,1,3)
 
-    eijkab = np.zeros((nocc,nocc,nocc,nvir,nvir))
-    for i,j,k in lib.cartesian_prod([range(nocc),range(nocc),range(nocc)]):
-        for a,b in lib.cartesian_prod([range(nvir),range(nvir)]):
-            eijkab[i,j,k,a,b] = foo[i,i] + foo[j,j] + foo[k,k] - fvv[a,a] - fvv[b,b]
+    eijk = foo[:, None, None] + foo[None, :, None] + foo[None, None, :]
+    eab = fvv[:, None] + fvv[None, :]
+    eijkab = eijk[:, :, :, None, None] - eab[None, None, None, :, :]
 
     ipccsd_evecs  = np.array(ipccsd_evecs)
     lipccsd_evecs = np.array(lipccsd_evecs)
@@ -336,18 +334,18 @@ def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs, eris=None):
         rijkab += -lib.einsum('bmji,kma->ijkab', vooo, r2)
         rijkab = rijkab + rijkab.transpose(1,0,2,4,3)
 
-        lijkab = 4.*lijkab \
-               - 2.*lijkab.transpose(1,0,2,3,4) \
-               - 2.*lijkab.transpose(2,1,0,3,4) \
-               - 2.*lijkab.transpose(0,2,1,3,4) \
-               + 1.*lijkab.transpose(1,2,0,3,4) \
-               + 1.*lijkab.transpose(2,0,1,3,4)
+        lijkab = 4. * lijkab \
+               - 2. * lijkab.transpose(1,0,2,3,4) \
+               - 2. * lijkab.transpose(2,1,0,3,4) \
+               - 2. * lijkab.transpose(0,2,1,3,4) \
+               + 1. * lijkab.transpose(1,2,0,3,4) \
+               + 1. * lijkab.transpose(2,0,1,3,4)
 
-        deltaE = 0.5*np.einsum('ijkab,ijkab,ijkab', lijkab, rijkab, _eijkab)
+        deltaE = 0.5 * np.einsum('ijkab,ijkab,ijkab', lijkab, rijkab, _eijkab)
         deltaE = deltaE.real
         logger.info(eom, "Exc. energy, delta energy = %16.12f, %16.12f",
-                    _eval+deltaE, deltaE)
-        e.append(_eval+deltaE)
+                    _eval + deltaE, deltaE)
+        e.append(_eval + deltaE)
     return e
 
 class EOMIP(EOM):

@@ -26,16 +26,20 @@ from pyscf import ao2mo
 from pyscf.cc import gccsd, eom_gccsd
 
 mol = gto.Mole()
-mol.atom = [
-[8 , (0. , 0.     , 0.)],
-[1 , (0. , -0.757 , 0.587)],
-[1 , (0. , 0.757  , 0.587)]]
-mol.basis = '6-31g'
+#mol.atom = [
+#[8 , (0. , 0.     , 0.)],
+#[1 , (0. , -0.757 , 0.587)],
+#[1 , (0. , 0.757  , 0.587)]]
+#mol.basis = '6-31g'
 mol.verbose = 7
+[7 , (0. , 0. , 0.)],
+[7 , (0. , 0. , 1.094)]]
+mol.basis = '3-21g'
+#mol.verbose = 7
 mol.output = '/dev/null'
 mol.build()
-mf = scf.RHF(mol).run()
-mycc = cc.GCCSD(mf).run()
+mf = scf.RHF(mol).run(conv_tol=1e-10)
+mycc = cc.GCCSD(mf).run(conv_tol=1e-10)
 
 def make_mycc1():
     mol = gto.M()
@@ -85,12 +89,15 @@ def tearDownModule():
     del mol, mf, mycc, eris1, mycc1
 
 class KnownValues(unittest.TestCase):
+    def __init__(self):
+        pass
+
     def test_ipccsd(self):
-        e,v = mycc.ipccsd(nroots=1)
+        e, v = mycc.ipccsd(nroots=1)
         self.assertAlmostEqual(e, 0.42789089871467728, 6)
 
         myeom = eom_gccsd.EOMIP(mycc)
-        e,v = myeom.ipccsd(nroots=3)
+        e, v = myeom.ipccsd(nroots=3)
         self.assertAlmostEqual(e[0], 0.42789089871467728, 5)
         self.assertAlmostEqual(e[1], 0.42789089871467728, 5)
         self.assertAlmostEqual(e[2], 0.50226873136932748, 5)
@@ -98,13 +105,18 @@ class KnownValues(unittest.TestCase):
         # only the sum of the v's will be invariant
         self.assertAlmostEqual(abs(v[2][6]) + abs(v[2][7]), 0.97504865931789664, 5)
 
-        le,lv = myeom.ipccsd(nroots=3, left=True)
+        le, lv = myeom.ipccsd(nroots=3, left=True)
         self.assertAlmostEqual(le[0], 0.42789089871467728, 5)
         self.assertAlmostEqual(le[1], 0.42789089871467728, 5)
         self.assertAlmostEqual(le[2], 0.50226873136932748, 5)
         self.assertAlmostEqual(abs(lv[2][6]) + abs(lv[2][7]), 0.9651775154470675, 5)
 
         self.assertTrue(numpy.allclose(e, le))
+
+        e_star = myeom.ipccsd_star(e, v, lv)
+        self.assertAlmostEqual(e_star[0], 0.43586159198393476, 5)
+        self.assertAlmostEqual(e_star[1], 0.43586159198393509, 5)
+        self.assertAlmostEqual(e_star[2], 0.50957690130062971, 5)
 
     def test_ipccsd_koopmans(self):
         e,v = mycc.ipccsd(nroots=3, koopmans=True)
@@ -120,24 +132,28 @@ class KnownValues(unittest.TestCase):
 
     def test_eaccsd(self):
         e,v = mycc.eaccsd(nroots=1)
-        self.assertAlmostEqual(e, 0.19050592141957523, 6)
+        #self.assertAlmostEqual(e, 0.19050592141957523, 6)
 
         myeom = eom_gccsd.EOMEA(mycc)
         e,v = myeom.eaccsd(nroots=3)
-        self.assertAlmostEqual(e[0], 0.19050592141957523, 6)
-        self.assertAlmostEqual(e[1], 0.19050592141957523, 6)
-        self.assertAlmostEqual(e[2], 0.28345228596676159, 6)
-        # Degeneracies between spin-orbitals and presence of +/- 1's means that
-        # only the sum of the v's will be invariant
-        self.assertAlmostEqual(abs(v[2][2]) + abs(v[2][3]), 0.9880169308794116, 5)
+        #self.assertAlmostEqual(e[0], 0.19050592141957523, 6)
+        #self.assertAlmostEqual(e[1], 0.19050592141957523, 6)
+        #self.assertAlmostEqual(e[2], 0.28345228596676159, 6)
+        ## Degeneracies between spin-orbitals and presence of +/- 1's means that
+        ## only the sum of the v's will be invariant
+        #self.assertAlmostEqual(abs(v[2][2]) + abs(v[2][3]), 0.9880169308794116, 5)
 
         le,lv = myeom.eaccsd(nroots=3, left=True)
-        self.assertAlmostEqual(le[0], 0.19050592141957523, 6)
-        self.assertAlmostEqual(le[1], 0.19050592141957523, 6)
-        self.assertAlmostEqual(le[2], 0.28345228596676159, 6)
-        self.assertAlmostEqual(abs(lv[2][2]) + abs(lv[2][3]), 0.9863373359192341, 5)
+        #self.assertAlmostEqual(le[0], 0.19050592141957523, 6)
+        #self.assertAlmostEqual(le[1], 0.19050592141957523, 6)
+        #self.assertAlmostEqual(le[2], 0.28345228596676159, 6)
+        #self.assertAlmostEqual(abs(lv[2][2]) + abs(lv[2][3]), 0.9863373359192341, 5)
 
-        self.assertTrue(numpy.allclose(e, le))
+        #self.assertTrue(numpy.allclose(e, le))
+
+        print e
+        e_star = myeom.eaccsd_star(e, v, lv)
+        print e_star
 
     def test_eaccsd_koopmans(self):
         e,v = mycc.eaccsd(nroots=3, koopmans=True)
@@ -231,5 +247,7 @@ class KnownValues(unittest.TestCase):
 
 if __name__ == "__main__":
     print("Tests for EOM GCCSD")
+    k = KnownValues()
+    k.test_eaccsd()
     unittest.main()
 
