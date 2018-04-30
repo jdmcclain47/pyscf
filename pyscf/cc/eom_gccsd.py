@@ -111,7 +111,6 @@ def ipccsd_diag(eom, imds=None):
     vector = amplitudes_to_vector_ip(Hr1, Hr2)
     return vector
 
-@profile
 def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs,
                 eris=None, type1=False, type2=False):
     """Calculates perturbative correction IP-CCSD*
@@ -134,6 +133,9 @@ def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs,
     Notes:
         The user should check to make sure the right and left eigenvalues
         before running the perturbative correction.
+
+        The 2hp left and right amplitudes are assumed to be of the form s^{a }_{ij},
+        i.e. the (ia) indices are coupled.
 
     Reference:
         Saeh, Stanton "...energy surfaces of radicals" JCP 111, 8275 (1999)
@@ -196,77 +198,61 @@ def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs,
 
         tmp = lib.einsum('ijab,k->ijkab', oovv, l1)
         lijkab = pijk(tmp)
-        tmp = lib.einsum('ieab,jke->ijkab', ovvv, l2)
-        lijkab += pijk(tmp)
-        tmp = -lib.einsum('kjmb,ima->ijkab', ooov, l2)
+        tmp = -lib.einsum('jima,mkb->ijkab', ooov, l2)
         tmp = pijk(tmp)
         lijkab += pab(tmp)
+        tmp = lib.einsum('ieab,jke->ijkab', ovvv, l2)
+        lijkab += pijk(tmp)
 
-        tmp = lib.einsum('baei,jke->ijkab', vvvo, r2)
-        rijkab = pijk(tmp)
-        tmp = lib.einsum('bmjk,mia->ijkab', vooo, r2)
-        tmp = pijk(tmp)
-        rijkab += pab(tmp)
         tmp = lib.einsum('mbke,m->bke', ovov, r1)
-        tmp = -lib.einsum('bke,ijae->ijkab', tmp, t2)
+        tmp = lib.einsum('bke,ijae->ijkab', tmp, t2)
         tmp = pijk(tmp)
-        rijkab += pab(tmp)
+        rijkab = -pab(tmp)
         tmp = lib.einsum('mnjk,n->mjk', oooo, r1)
         tmp = lib.einsum('mjk,imab->ijkab', tmp, t2)
         rijkab += pijk(tmp)
+        tmp = lib.einsum('amij,mkb->ijkab', vooo, r2)
+        tmp = pijk(tmp)
+        rijkab -= pab(tmp)
+        tmp = lib.einsum('baei,jke->ijkab', vvvo, r2)
+        rijkab += pijk(tmp)
 
         if type1:
-            #tmp = lib.einsum('njab,nmie->ijmabe',t2,ooov)
-            #tmp = tmp - tmp.transpose(1,0,2,3,4,5)
-            #tmp2 = lib.einsum('ijmabe,mke->ijkab',tmp,r2)
-            #rijkab -= pijk(tmp2)
-
-            # The same as above (as specified in Stanton and Gauss),
-            # but with lower scaling.
-            tmp = lib.einsum('mke,nmie->kin', r2, ooov)
-            tmp2 = lib.einsum('kin,njab->ijkab', tmp, t2)
-            tmp2 = pij(tmp2)
-            rijkab -= pijk(tmp2)
-
-            tmp = lib.einsum('mke,maef->kaf', r2, ovvv)
-            tmp2 = lib.einsum('kaf,ijfb->ijkab', tmp, t2)
+            tmp = lib.einsum('mke,mbef->kbf', r2, ovvv)
+            tmp2 = lib.einsum('kbf,ijaf->ijkab', tmp, t2)
             tmp2 = pab(tmp2)
             rijkab += pijk(tmp2)
 
-            tmp = 0.5 * lib.einsum('mna,nmke->aek', r2, ooov)
-            tmp2 = lib.einsum('aek,ijeb->ijkab', tmp, t2)
+            tmp = lib.einsum('mke,nmje->njk', r2, ooov)
+            tmp2 = lib.einsum('njk,inab->ijkab', tmp, t2)
+            tmp2 = pij(tmp2)
+            rijkab -= pijk(tmp2)
+
+            tmp = 0.5 * lib.einsum('mnb,nmke->bek', r2, ooov)
+            tmp2 = lib.einsum('bek,ijae->ijkab', tmp, t2)
             tmp2 = pab(tmp2)
             rijkab += pijk(tmp2)
 
         if type2:
-            #tmp = lib.einsum('imae,nmje->ijna',t2,ooov)
-            #tmp = tmp - tmp.transpose(1,0,2,3)
-            #tmp2 = lib.einsum('ijna,nkb->ijkab',tmp,r2)
-            #rijkab += pijk(tmp2)
-            tmp = lib.einsum('nja,nmie->ijmae', r2, ooov)
+            tmp = lib.einsum('imae,mbef->iabf', t2, ovvv)
+            tmp2 = lib.einsum('iabf,jkf->ijkab', tmp, r2)
+            tmp2 = pab(tmp2)
+            rijkab += pijk(tmp2)
+
+            tmp = lib.einsum('nkb,nmje->jkmbe', r2, ooov)
             tmp = tmp - tmp.transpose(1, 0, 2, 3, 4)
-            tmp2 = lib.einsum('mkeb,ijmae->ijkab', t2, tmp)
+            tmp2 = lib.einsum('imae,jkmbe->ijkab', t2, tmp)
             tmp2 = pab(tmp2)
             rijkab -= pijk(tmp2)
 
-            tmp = lib.einsum('mkeb,maef->fkab', t2, ovvv)
-            tmp2 = lib.einsum('fkab,ijf->ijkab', tmp, r2)
+            tmp = 0.5 * lib.einsum('ijfe,maef->iajm', t2, ovvv)
+            tmp2 = lib.einsum('iajm,mkb->ijkab', tmp, r2)
             tmp2 = pab(tmp2)
-            rijkab += pijk(tmp2)
+            rijkab -= pijk(tmp2)
 
-            tmp = 0.5 * lib.einsum('mnab,nmke->ekab', t2, ooov)
-            tmp2 = lib.einsum('ekab,ije->ijkab', tmp, r2)
-            #tmp2 = pab(tmp2)
+            tmp = 0.5 * lib.einsum('nmab,nmie->iabe', t2, ooov)
+            tmp2 = lib.einsum('iabe,jke->ijkab', tmp, r2)
             rijkab += pijk(tmp2)
-
-            tmp = lib.einsum('mjaf,mbef->ajeb', t2, ovvv)
-            tmp2 = lib.einsum('ajeb,ike->ijkab', tmp, r2)
-            tmp2 = pab(tmp2)
-            rijkab += pijk(tmp2)
-
-        #print np.linalg.norm(rijkab + rijkab.transpose(0,1,2,4,3))
-        #print np.linalg.norm(rijkab + rijkab.transpose(1,0,2,3,4))
-        #print np.linalg.norm(rijkab + rijkab.transpose(0,2,1,3,4))
 
         deltaE = (1. / 12) * lib.einsum('ijkab,ijkab,ijkab', lijkab, rijkab, denom)
         deltaE = deltaE.real
@@ -392,8 +378,7 @@ def eaccsd_diag(eom, imds=None):
     vector = amplitudes_to_vector_ea(Hr1, Hr2)
     return vector
 
-def eaccsd_star(eom, eaccsd_evals, eaccsd_evecs, leaccsd_evecs,
-                eris=None, type1=False, type2=False):
+def eaccsd_star(eom, eaccsd_evals, eaccsd_evecs, leaccsd_evecs, eris=None, type1=False, type2=False):
     """Calculates perturbative correction EA-CCSD*
 
     Args:
@@ -414,6 +399,9 @@ def eaccsd_star(eom, eaccsd_evals, eaccsd_evecs, leaccsd_evecs,
     Notes:
         The user should check to make sure the right and left eigenvalues
         before running the perturbative correction.
+
+        The 2ph left and right amplitudes are assumed to be of the form s^{ab}_{ j},
+        i.e. the (jb) indices are coupled.
 
     Reference:
         The EA-CCSD* is analogous to the IP-CCSD* found in the reference:
@@ -438,10 +426,10 @@ def eaccsd_star(eom, eaccsd_evals, eaccsd_evecs, leaccsd_evecs,
     oovv = _cp(eris.oovv)
     ovvv = _cp(eris.ovvv)
     ovov = _cp(eris.ovov)
-    ovvo = -_cp(eris.ovov).transpose(0,1,3,2)
+    ovvo = -_cp(eris.ovov).transpose(0, 1, 3, 2)
     ooov = _cp(eris.ooov)
-    vooo = _cp(ooov).conj().transpose(3,2,1,0)
-    vvvo = _cp(ovvv).conj().transpose(3,2,1,0)
+    vooo = _cp(ooov).conj().transpose(3, 2, 1, 0)
+    vvvo = _cp(ovvv).conj().transpose(3, 2, 1, 0)
 
     # Create denominator
     eabc = fvv[:, None, None] + fvv[None, :, None] + fvv[None, None, :]
@@ -451,15 +439,15 @@ def eaccsd_star(eom, eaccsd_evals, eaccsd_evecs, leaccsd_evecs,
     # Permutation operators
     def pabc(tmp):
         '''P(abc)'''
-        return tmp + tmp.transpose(0,1,3,4,2) + tmp.transpose(0,1,4,2,3)
+        return tmp + tmp.transpose(0, 1, 3, 4, 2) + tmp.transpose(0, 1, 4, 2, 3)
 
     def pij(tmp):
         '''P(ij)'''
-        return tmp - tmp.transpose(1,0,2,3,4)
+        return tmp - tmp.transpose(1, 0, 2, 3, 4)
 
     def pab(tmp):
         '''P(ab)'''
-        return tmp - tmp.transpose(0,1,3,2,4)
+        return tmp - tmp.transpose(0, 1, 3, 2, 4)
 
     eaccsd_evecs = np.array(eaccsd_evecs)
     leaccsd_evecs = np.array(leaccsd_evecs)
@@ -476,80 +464,68 @@ def eaccsd_star(eom, eaccsd_evals, eaccsd_evecs, leaccsd_evecs,
         denom = eijabc + ea_eval
         denom = 1. / denom
 
-        tmp = lib.einsum('c,ijab->ijabc',l1,oovv)
-        lijabc = pabc(tmp)
-        tmp = lib.einsum('jima,mbc->ijabc',ooov,l2)
-        lijabc += pabc(tmp)
-        tmp = lib.einsum('ieab,jce->ijabc',ovvv,l2)
+        tmp = lib.einsum('c,ijab->ijabc', l1, oovv)
+        lijabc = -pabc(tmp)
+        tmp = lib.einsum('jima,mbc->ijabc', ooov, l2)
+        lijabc += -pabc(tmp)
+        tmp = lib.einsum('ieab,jce->ijabc', ovvv, l2)
         tmp = pabc(tmp)
-        lijabc += pij(tmp)
+        lijabc += -pij(tmp)
 
-        tmp = lib.einsum('bcef,f->bce',vvvv,r1)
-        tmp = lib.einsum('bce,ijae->ijabc',tmp,t2)
-        rijabc = pabc(tmp)
-        tmp = lib.einsum('mcje,e->mcj',ovov,r1)
-        tmp = lib.einsum('mcj,imab->ijabc',tmp,t2)
-        tmp = pabc(tmp)
-        rijabc -= pij(tmp)
-        tmp = lib.einsum('amij,mcb->ijabc',vooo,r2)
-        rijabc -= pabc(tmp)
-        tmp = lib.einsum('cbej,iea->ijabc',vvvo,r2)
+        tmp = lib.einsum('bcef,f->bce', vvvv, r1)
+        tmp = lib.einsum('bce,ijae->ijabc', tmp, t2)
+        rijabc = -pabc(tmp)
+        tmp = lib.einsum('mcje,e->mcj', ovov, r1)
+        tmp = lib.einsum('mcj,imab->ijabc', tmp, t2)
         tmp = pabc(tmp)
         rijabc += pij(tmp)
-
-        #print np.linalg.norm(rijabc + rijabc.transpose(1,0,2,3,4))
-        #print np.linalg.norm(rijabc + rijabc.transpose(0,1,3,2,4))
-        #print np.linalg.norm(rijabc + rijabc.transpose(0,1,2,4,3))
+        tmp = lib.einsum('amij,mcb->ijabc', vooo, r2)
+        rijabc += pabc(tmp)
+        tmp = lib.einsum('baei,jce->ijabc', vvvo, r2)
+        tmp = pabc(tmp)
+        rijabc -= pij(tmp)
 
         if type1:
-            #tmp = lib.einsum('mce,maef->caf',r2,ovvv)
-            #tmp2 = lib.einsum('caf,ijfb->ijabc',tmp,t2)
-            #tmp2 = pab(tmp2)
-            #rijabc += pabc(tmp2)
-            tmp = lib.einsum('mce,mbef->cbf',r2,ovvv)
-            tmp2 = lib.einsum('cbf,jifa->ijabc',tmp,t2)
+            tmp = lib.einsum('mce,mbef->cbf', r2, ovvv)
+            tmp2 = lib.einsum('cbf,jifa->ijabc', tmp, t2)
             tmp2 = pab(tmp2)
+            rijabc -= pabc(tmp2)
+
+            tmp = lib.einsum('mce,kmje->cjk', r2, ooov)
+            tmp2 = lib.einsum('cjk,ikab->ijabc', tmp, t2)
+            tmp2 = pij(tmp2)
             rijabc += pabc(tmp2)
 
-            tmp = lib.einsum('mce,kmie->cik',r2,ooov)
-            tmp2 = lib.einsum('cik,jkba->ijabc',tmp,t2)
+            tmp = 0.5 * lib.einsum('jfe,kcef->kjc', r2, ovvv)
+            tmp2 = lib.einsum('kjc,ikab->ijabc', tmp, t2)
             tmp2 = pij(tmp2)
-            rijabc -= pabc(tmp2)
-
-            tmp = 0.5*lib.einsum('ief,kcfe->kic',r2,ovvv)
-            tmp2 = lib.einsum('kic,kjab->ijabc',tmp,t2)
-            tmp2 = pij(tmp2)
-            rijabc -= pabc(tmp2)
-
-            #print np.linalg.norm(rijabc + rijabc.transpose(1,0,2,3,4))
-            #print np.linalg.norm(rijabc + rijabc.transpose(0,1,3,2,4))
-            #print np.linalg.norm(rijabc + rijabc.transpose(0,1,2,4,3))
+            rijabc += pabc(tmp2)
 
         if type2:
-            tmp = lib.einsum('jcf,mbef->jmebc',r2,ovvv)
-            tmp = tmp - tmp.transpose(0,1,2,4,3)
-            tmp2 = lib.einsum('imae,jmebc->ijabc',t2,tmp)
+            tmp = lib.einsum('jcf,mbef->jmebc', r2, ovvv)
+            tmp = tmp - tmp.transpose(0, 1, 2, 4, 3)
+            tmp2 = lib.einsum('imae,jmebc->ijabc', t2, tmp)
+            tmp2 = pij(tmp2)
+            rijabc -= pabc(tmp2)
+
+            tmp = lib.einsum('kmje,imae->ijka', ooov, t2)
+            tmp2 = lib.einsum('ijka,kcb->ijabc', tmp, r2)
             tmp2 = pij(tmp2)
             rijabc += pabc(tmp2)
 
-            tmp = lib.einsum('kmje,imae->ijka',ooov,t2)
-            tmp2 = lib.einsum('ijka,kcb->ijabc',tmp,r2)
+            tmp = 0.5 * lib.einsum('kaef,ijfe->kija', ovvv, t2)
+            tmp2 = lib.einsum('kija,kcb->ijabc', tmp, r2)
+            rijabc += pabc(tmp2)
+
+            tmp = 0.5 * lib.einsum('nmie,njae->iajm', ooov, t2)
+            tmp2 = lib.einsum('iajm,mcb->ijabc', tmp, r2)
             tmp2 = pij(tmp2)
             rijabc -= pabc(tmp2)
 
-            tmp = 0.5 * lib.einsum('kaef,ijfe->kija',ovvv,t2)
-            tmp2 = lib.einsum('kija,kcb->ijabc',tmp,r2)
-            rijabc -= pabc(tmp2)
-
-            #print np.linalg.norm(rijabc + rijabc.transpose(1,0,2,3,4))
-            #print np.linalg.norm(rijabc + rijabc.transpose(0,1,3,2,4))
-            #print np.linalg.norm(rijabc + rijabc.transpose(0,1,2,4,3))
-
-        deltaE = (1./12)*lib.einsum('ijabc,ijabc,ijabc',lijabc,rijabc,denom)
+        deltaE = (1. / 12) * lib.einsum('ijabc,ijabc,ijabc', lijabc, rijabc, denom)
         deltaE = deltaE.real
-        logger.info(eom, "Exc. energy, delta energy = %16.12f, %16.12f",
-                    ea_eval+deltaE, deltaE)
-        e_star.append(ea_eval+deltaE)
+        logger.info(eom, "Exc. energy, delta energy = %16.12f, %16.12f", ea_eval + deltaE, deltaE)
+        e_star.append(ea_eval + deltaE)
 
     return e_star
 
