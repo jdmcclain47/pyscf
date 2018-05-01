@@ -116,15 +116,20 @@ def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs,
     """Calculates perturbative correction IP-CCSD*
 
     Args:
-        eom (:obj:`EOMIP`): Object containing coupled-cluster results.
-        ipccsd_evals (array-like): Right EOM-IP-CCSD eigenvalues;
-            should be same as left eigenvalues.
-        ipccsd_evecs (array-like): List of right EOM-IP-CCSD eigenvectors.
-        lipccsd_evecs (array-like): List of left EOM-IP-CCSD eigenvectors.
-        eris (:obj:`_PhysicistsERIs`): Antisymmetrized electron-repulsion
-            integrals in physicist's notation.
-        type1 (bool): Include type1 terms (defined in ref.) to perturbation.
-        type2 (bool): Include type2 terms (defined in ref.) to perturbation.
+        eom (:obj:`EOMIP`):
+            Object containing coupled-cluster results.
+        ipccsd_evals (array-like):
+            Right EOM-IP-CCSD eigenvalues; should be same as left eigenvalues.
+        ipccsd_evecs (array-like):
+            List of right EOM-IP-CCSD eigenvectors.
+        lipccsd_evecs (array-like):
+            List of left EOM-IP-CCSD eigenvectors.
+        eris (:obj:`_PhysicistsERIs`):
+            Antisymmetrized electron-repulsion integrals in physicist's notation.
+        type1 (bool):
+            Include type1 terms (defined in ref.) in perturbation.
+        type2 (bool):
+            Include type2 terms (defined in ref.) in perturbation.
 
     Returns:
         e_star (list of float):
@@ -260,11 +265,195 @@ def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs,
         e_star.append(ip_eval + deltaE)
     return e_star
 
+def ipccsd_star_skeletons(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs,
+                          eris=None, set_left_equal_right=False):
+    """Calculates perturbative correction IP-CCSD*
+
+    Args:
+        eom (:obj:`EOMIP`):
+            Object containing coupled-cluster results.
+        ipccsd_evals (array-like):
+            Right EOM-IP-CCSD eigenvalues; should be same as left eigenvalues.
+        ipccsd_evecs (array-like):
+            List of right EOM-IP-CCSD eigenvectors.
+        lipccsd_evecs (array-like):
+            List of left EOM-IP-CCSD eigenvectors.
+        eris (:obj:`_PhysicistsERIs`):
+            Antisymmetrized electron-repulsion integrals in physicist's notation.
+        set_left_equal_right (bool):
+            Sets the left EOM eigenvectors equal to the right EOM eigenvectors.
+
+    Returns:
+        skeleton_contributions (list of :obj:`ndarray`):
+            Contributions to perturbation energy from skeleton diagrams.
+            The contribution to the i'th eigenvalue for the (left_idx, right_idx) skeleton
+            diagram is given by `skeleton_contributions[i][left_idx, right_idx]`.
+
+    Notes:
+        The user should check to make sure the right and left eigenvalues
+        before running the perturbative correction.
+
+        The 2hp left and right amplitudes are assumed to be of the form s^{a }_{ij},
+        i.e. the (ia) indices are coupled.
+
+    Reference:
+        Saeh, Stanton "...energy surfaces of radicals" JCP 111, 8275 (1999)
+
+    """
+    assert (eom.partition == None)
+    if eris is None:
+        eris = eom._cc.ao2mo()
+    t1, t2 = eom._cc.t1, eom._cc.t2
+    fock = eris.fock
+    nocc = eom.nocc
+    nmo = eom.nmo
+    nvir = nmo - nocc
+
+    fov = fock[:nocc, nocc:].diagonal()
+    foo = fock[:nocc, :nocc].diagonal()
+    fvv = fock[nocc:, nocc:].diagonal()
+
+    oovv = _cp(eris.oovv)
+    ovvv = _cp(eris.ovvv)
+    ovov = _cp(eris.ovov)
+    ovvo = -_cp(eris.ovov).transpose(0, 1, 3, 2)
+    ooov = _cp(eris.ooov)
+    vooo = _cp(ooov).conj().transpose(3, 2, 1, 0)
+    vvvo = _cp(ovvv).conj().transpose(3, 2, 1, 0)
+    oooo = _cp(eris.oooo)
+
+    # Create denominator
+    eijk = foo[:, None, None] + foo[None, :, None] + foo[None, None, :]
+    eab = fvv[:, None] + fvv[None, :]
+    eijkab = eijk[:, :, :, None, None] - eab[None, None, None, :, :]
+
+    # Permutation operators
+    def pijk(tmp):
+        '''P(ijk)'''
+        return tmp + tmp.transpose(1, 2, 0, 3, 4) + tmp.transpose(2, 0, 1, 3, 4)
+
+    def pab(tmp):
+        '''P(ab)'''
+        return tmp - tmp.transpose(0, 1, 2, 4, 3)
+
+    def pij(tmp):
+        '''P(ij)'''
+        return tmp - tmp.transpose(1, 0, 2, 3, 4)
+
+    ipccsd_evecs = np.array(ipccsd_evecs)
+    lipccsd_evecs = np.array(lipccsd_evecs)
+    skeleton_contributions = []
+    for ip_eval, ip_evec, ip_levec in zip(ipccsd_evals, ipccsd_evecs, lipccsd_evecs):
+        # Enforcing <L|R> = 1
+        l1, l2 = vector_to_amplitudes_ip(ip_levec, nmo, nocc)
+        r1, r2 = vector_to_amplitudes_ip(ip_evec, nmo, nocc)
+        if set_left_equal_right:
+            l1 = r1;
+            l2 = r2;
+        ldotr = np.dot(l1, r1) + 0.5 * np.dot(l2.ravel(), r2.ravel())
+        l1 /= ldotr
+        l2 /= ldotr
+
+        # Denominator + eigenvalue(IP-CCSD)
+        denom = eijkab + ip_eval
+        denom = 1. / denom
+        energy_fac = 1. / 12
+
+        logger.info(eom, "Left Skeletons")
+        tmp = lib.einsum('ijab,k->ijkab', oovv, l1)
+        lijkab1 = pijk(tmp)
+
+        tmp = -lib.einsum('jima,mkb->ijkab', ooov, l2)
+        tmp = pijk(tmp)
+        lijkab2 = pab(tmp)
+        tmp = lib.einsum('ieab,jke->ijkab', ovvv, l2)
+        lijkab2 += pijk(tmp)
+
+        logger.info(eom, "Skeleton 1")
+        tmp = lib.einsum('mbke,m->bke', ovov, r1)
+        tmp = lib.einsum('bke,ijae->ijkab', tmp, t2)
+        tmp = pijk(tmp)
+        rijkab = -pab(tmp)
+        tmp = lib.einsum('mnjk,n->mjk', oooo, r1)
+        tmp = lib.einsum('mjk,imab->ijkab', tmp, t2)
+        rijkab += pijk(tmp)
+        skeleton11 = energy_fac * lib.einsum('ijkab,ijkab,ijkab', lijkab1, rijkab, denom)
+        skeleton21 = energy_fac * lib.einsum('ijkab,ijkab,ijkab', lijkab2, rijkab, denom)
+
+        logger.info(eom, "Skeleton 2")
+        tmp = lib.einsum('amij,mkb->ijkab', vooo, r2)
+        tmp = pijk(tmp)
+        rijkab = -pab(tmp)
+        tmp = lib.einsum('baei,jke->ijkab', vvvo, r2)
+        rijkab += pijk(tmp)
+        skeleton12 = energy_fac * lib.einsum('ijkab,ijkab,ijkab', lijkab1, rijkab, denom)
+        skeleton22 = energy_fac * lib.einsum('ijkab,ijkab,ijkab', lijkab2, rijkab, denom)
+
+        #if type1:
+        logger.info(eom, "Skeleton 3 (type 1)")
+        tmp = lib.einsum('mke,mbef->kbf', r2, ovvv)
+        tmp2 = lib.einsum('kbf,ijaf->ijkab', tmp, t2)
+        tmp2 = pab(tmp2)
+        rijkab = pijk(tmp2)
+
+        tmp = lib.einsum('mke,nmje->njk', r2, ooov)
+        tmp2 = lib.einsum('njk,inab->ijkab', tmp, t2)
+        tmp2 = pij(tmp2)
+        rijkab -= pijk(tmp2)
+        skeleton13 = energy_fac * lib.einsum('ijkab,ijkab,ijkab', lijkab1, rijkab, denom)
+        skeleton23 = energy_fac * lib.einsum('ijkab,ijkab,ijkab', lijkab2, rijkab, denom)
+
+        logger.info(eom, "Skeleton 4 (type 1)")
+        tmp = 0.5 * lib.einsum('mnb,nmke->bek', r2, ooov)
+        tmp2 = lib.einsum('bek,ijae->ijkab', tmp, t2)
+        tmp2 = pab(tmp2)
+        rijkab = pijk(tmp2)
+        skeleton14 = energy_fac * lib.einsum('ijkab,ijkab,ijkab', lijkab1, rijkab, denom)
+        skeleton24 = energy_fac * lib.einsum('ijkab,ijkab,ijkab', lijkab2, rijkab, denom)
+
+        #if type2:
+        logger.info(eom, "Skeleton 5 (type 2)")
+        tmp = lib.einsum('imae,mbef->iabf', t2, ovvv)
+        tmp2 = lib.einsum('iabf,jkf->ijkab', tmp, r2)
+        tmp2 = pab(tmp2)
+        rijkab = pijk(tmp2)
+
+        tmp = lib.einsum('nkb,nmje->jkmbe', r2, ooov)
+        tmp = tmp - tmp.transpose(1, 0, 2, 3, 4)
+        tmp2 = lib.einsum('imae,jkmbe->ijkab', t2, tmp)
+        tmp2 = pab(tmp2)
+        rijkab -= pijk(tmp2)
+        skeleton15 = energy_fac * lib.einsum('ijkab,ijkab,ijkab', lijkab1, rijkab, denom)
+        skeleton25 = energy_fac * lib.einsum('ijkab,ijkab,ijkab', lijkab2, rijkab, denom)
+
+        logger.info(eom, "Skeleton 6 (type 2)")
+        tmp = 0.5 * lib.einsum('ijfe,maef->iajm', t2, ovvv)
+        tmp2 = lib.einsum('iajm,mkb->ijkab', tmp, r2)
+        tmp2 = pab(tmp2)
+        rijkab = -pijk(tmp2)
+
+        tmp = 0.5 * lib.einsum('nmab,nmie->iabe', t2, ooov)
+        tmp2 = lib.einsum('iabe,jke->ijkab', tmp, r2)
+        rijkab += pijk(tmp2)
+        skeleton16 = energy_fac * lib.einsum('ijkab,ijkab,ijkab', lijkab1, rijkab, denom)
+        skeleton26 = energy_fac * lib.einsum('ijkab,ijkab,ijkab', lijkab2, rijkab, denom)
+
+        current_contribution = np.array([skeleton11, skeleton21,
+                                         skeleton12, skeleton22,
+                                         skeleton13, skeleton23,
+                                         skeleton14, skeleton24,
+                                         skeleton15, skeleton25,
+                                         skeleton16, skeleton26]).reshape(6, 2).T
+        skeleton_contributions.append(current_contribution)
+
+    return skeleton_contributions
+
 class EOMIP(eom_rccsd.EOMIP):
     matvec = ipccsd_matvec
     l_matvec = lipccsd_matvec
     get_diag = ipccsd_diag
     ipccsd_star = ipccsd_star
+    ipccsd_star_skeletons = ipccsd_star_skeletons
 
     def vector_to_amplitudes(self, vector, nmo=None, nocc=None):
         if nmo is None: nmo = self.nmo
@@ -382,15 +571,20 @@ def eaccsd_star(eom, eaccsd_evals, eaccsd_evecs, leaccsd_evecs, eris=None, type1
     """Calculates perturbative correction EA-CCSD*
 
     Args:
-        eom (:obj:`EOMEA`): Object containing coupled-cluster results.
-        eaccsd_evals (array-like): Right EOM-EA-CCSD eigenvalues;
-            should be same as left eigenvalues.
-        eaccsd_evecs (array-like): List of right EOM-EA-CCSD eigenvectors.
-        leaccsd_evecs (array-like): List of left EOM-EA-CCSD eigenvectors.
-        eris (:obj:`_PhysicistsERIs`): Antisymmetrized electron-repulsion
-            integrals in physicist's notation.
-        type1 (bool): Include type1 terms (defined in ref.) to perturbation.
-        type2 (bool): Include type2 terms (defined in ref.) to perturbation.
+        eom (:obj:`EOMEA`):
+            Object containing coupled-cluster results.
+        eaccsd_evals (array-like):
+            Right EOM-EA-CCSD eigenvalues; should be same as left eigenvalues.
+        eaccsd_evecs (array-like of :obj:`ndarray`):
+            List of right EOM-EA-CCSD eigenvectors.
+        leaccsd_evecs (array-like of :obj:`ndarray`):
+            List of left EOM-EA-CCSD eigenvectors.
+        eris (:obj:`_PhysicistsERIs`):
+            Antisymmetrized electron-repulsion integrals in physicist's notation.
+        type1 (bool):
+            Include type1 terms (defined in ref.) in perturbation.
+        type2 (bool):
+            Include type2 terms (defined in ref.) in perturbation.
 
     Returns:
         e_star (list of float):

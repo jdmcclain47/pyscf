@@ -110,13 +110,34 @@ class KnownValues(unittest.TestCase):
         self.assertTrue(numpy.allclose(e, le))
 
         e_star = myeom.ipccsd_star(e, v, lv)
-        self.assertAlmostEqual(e_star[0], 0.43586159198393476, 10)
+        self.assertAlmostEqual(e_star[0], 0.43586159198393476, 5)
 
         e_star = myeom.ipccsd_star(e, v, lv, type1=True)
-        self.assertAlmostEqual(e_star[0], 0.43696348534760743, 10)
+        self.assertAlmostEqual(e_star[0], 0.43696348534760743, 5)
 
         e_star = myeom.ipccsd_star(e, v, lv, type1=True, type2=True)
-        self.assertAlmostEqual(e_star[0], 0.43519790161865612, 10)
+        self.assertAlmostEqual(e_star[0], 0.43519790161865612, 5)
+
+        star_contributions = myeom.ipccsd_star_skeletons(e, v, lv)
+        star_idx = numpy.array([[1, 1, 0, 0, 0, 0],
+                                [1, 1, 0, 0, 0, 0]])
+        star_idx_w1 = numpy.array([[1, 1, 1, 1, 0, 0],
+                                   [1, 1, 1, 1, 0, 0]])
+        star_idx_w12 = numpy.array([[1, 1, 1, 1, 1, 1],
+                                    [1, 1, 1, 1, 1, 1]])
+
+        ipccsd_eval = 0.42789089871467728
+        deltaE = 0.43586159198393476 - ipccsd_eval
+        self.assertAlmostEqual(numpy.dot(star_contributions[0].flatten(),
+                               star_idx.flatten()), deltaE, 5)
+
+        deltaE = 0.43696348534760743 - ipccsd_eval
+        self.assertAlmostEqual(numpy.dot(star_contributions[0].flatten(),
+                               star_idx_w1.flatten()), deltaE, 5)
+
+        deltaE = 0.43519790161865612 - ipccsd_eval
+        self.assertAlmostEqual(numpy.dot(star_contributions[0].flatten(),
+                               star_idx_w12.flatten()), deltaE, 5)
 
     def test_ipccsd_koopmans(self):
         e,v = mycc.ipccsd(nroots=3, koopmans=True)
@@ -253,7 +274,7 @@ class KnownValues(unittest.TestCase):
 if __name__ == "__main__":
     print("Tests for EOM GCCSD")
     k = KnownValues()
-    #k.test_ipccsd()
-    k.test_eaccsd()
+    k.test_ipccsd()
+    #k.test_eaccsd()
     unittest.main()
 
