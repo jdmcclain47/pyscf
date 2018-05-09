@@ -194,6 +194,12 @@ def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs,
         l1, l2 = vector_to_amplitudes_ip(ip_levec, nmo, nocc)
         r1, r2 = vector_to_amplitudes_ip(ip_evec, nmo, nocc)
         ldotr = np.dot(l1, r1) + 0.5 * np.dot(l2.ravel(), r2.ravel())
+
+        logger.info(eom, 'Left-right amplitude overlap : %14.8e', ldotr)
+        if abs(ldotr) < 1e-7:
+            logger.warn(eom, 'Small %s left-right amplitude overlap. Results '
+                             'may be inaccurate.', ldotr)
+
         l1 /= ldotr
         l2 /= ldotr
 
@@ -351,6 +357,11 @@ def ipccsd_star_skeletons(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs,
             l1 = r1;
             l2 = r2;
         ldotr = np.dot(l1, r1) + 0.5 * np.dot(l2.ravel(), r2.ravel())
+
+        logger.info(eom, 'Left-right amplitude overlap : %14.8e', ldotr)
+        if abs(ldotr) < 1e-7:
+            logger.warn(eom, 'Small %s left-right amplitude overlap. Results '
+                             'may be inaccurate.', ldotr)
         l1 /= ldotr
         l2 /= ldotr
 
@@ -651,6 +662,12 @@ def eaccsd_star(eom, eaccsd_evals, eaccsd_evecs, leaccsd_evecs, eris=None, type1
         l1, l2 = vector_to_amplitudes_ea(ea_levec, nmo, nocc)
         r1, r2 = vector_to_amplitudes_ea(ea_evec, nmo, nocc)
         ldotr = np.dot(l1, r1) + 0.5 * np.dot(l2.ravel(), r2.ravel())
+
+        logger.info(eom, 'Left-right amplitude overlap : %14.8e', ldotr)
+        if abs(ldotr) < 1e-7:
+            logger.warn(eom, 'Small %s left-right amplitude overlap. Results '
+                             'may be inaccurate.', ldotr)
+
         l1 /= ldotr
         l2 /= ldotr
 
