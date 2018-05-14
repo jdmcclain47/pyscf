@@ -72,6 +72,28 @@ def cc_Wvvvv(t1, t2, eris):
     Wabef += einsum('mnab,mnef->abef', tau, 0.25*np.asarray(eris.oovv))
     return Wabef
 
+def _new(shape, dtype, out):
+    '''Checks whether to create array or use hdf5 file'''
+    if out is None:  # incore
+        return np.empty(shape, dtype=dtype)
+    else:
+        assert(out.shape == shape)
+        assert(out.dtype == dtype)
+    return out
+
+def cc_Wvvvv_new(t1, t2, eris, out=None):
+    nocc, nvir = t1.shape
+    tau = make_tau(t2, t1, t1)
+    eris_ovvv = np.asarray(eris.ovvv)
+    Wabef = _new(eris.vvvv.shape, t1.dtype, out)
+    for a in range(nvir):
+        tmp = einsum('mb,mfe->bfe', t1, eris_ovvv[:, a])
+        tmp_T = einsum('m,mbfe->bfe', t1[a], eris_ovvv)
+        #Wabef[a] = np.asarray(eris.vvvv[a]) - tmp + tmp.transpose(1,0,2,3)
+        Wabef[a] = np.asarray(eris.vvvv[a]) - tmp + tmp_T
+        Wabef[a] += einsum('mnb,mnef->bef', tau[:, :, a], 0.25*np.asarray(eris.oovv))
+    return Wabef
+
 def cc_Wovvo(t1, t2, eris):
     eris_ovvo = -np.asarray(eris.ovov).transpose(0,1,3,2)
     eris_oovo = -np.asarray(eris.ooov).transpose(0,1,3,2)
@@ -108,6 +130,14 @@ def Wvvvv(t1, t2, eris):
     tau = make_tau(t2, t1, t1)
     Wabef = cc_Wvvvv(t1, t2, eris)
     Wabef += einsum('mnab,mnef->abef', tau, .25*np.asarray(eris.oovv))
+    return Wabef
+
+def Wvvvv_new(t1, t2, eris):
+    nocc, nvir = t1.shape
+    tau = make_tau(t2, t1, t1)
+    Wabef = cc_Wvvvv_new(t1, t2, eris)
+    for a in range(nvir):
+        Wabef[a] += einsum('mnb,mnef->bef', tau[:, :, a], .25*np.asarray(eris.oovv))
     return Wabef
 
 def Wovvo(t1, t2, eris):
