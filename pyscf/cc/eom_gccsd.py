@@ -327,6 +327,7 @@ def ipccsd_star_skeletons(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs,
     vooo = _cp(ooov).conj().transpose(3, 2, 1, 0)
     vvvo = _cp(ovvv).conj().transpose(3, 2, 1, 0)
     oooo = _cp(eris.oooo)
+    vvvv = _cp(eris.vvvv)
 
     # Create denominator
     eijk = foo[:, None, None] + foo[None, :, None] + foo[None, None, :]
@@ -449,12 +450,26 @@ def ipccsd_star_skeletons(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs,
         skeleton16 = energy_fac * lib.einsum('ijkab,ijkab,ijkab', lijkab1, rijkab, denom)
         skeleton26 = energy_fac * lib.einsum('ijkab,ijkab,ijkab', lijkab2, rijkab, denom)
 
+        #if type 3
+        logger.info(eom, "Skeleton 7 (type 3)")
+        tmp = 0.5 * lib.einsum('fegi,abef->igab', vvvo, vvvv)
+        tmp2 = lib.einsum('igab,jkg->ijkab', tmp, r2)
+        rijkab = pijk(tmp2)
+
+        tmp = 0.5 * lib.einsum('anlm,lmij->ijan', vooo, oooo)
+        tmp2 = lib.einsum('ijan,nkb->ijkab', tmp, r2)
+        tmp2 = pijk(tmp2)
+        rijkab += - pab(tmp2)
+        skeleton17 = energy_fac * lib.einsum('ijkab,ijkab,ijkab', lijkab1, rijkab, denom)
+        skeleton27 = energy_fac * lib.einsum('ijkab,ijkab,ijkab', lijkab2, rijkab, denom)
+
         current_contribution = np.array([skeleton11, skeleton21,
                                          skeleton12, skeleton22,
                                          skeleton13, skeleton23,
                                          skeleton14, skeleton24,
                                          skeleton15, skeleton25,
-                                         skeleton16, skeleton26]).reshape(6, 2).T
+                                         skeleton16, skeleton26,
+                                         skeleton17, skeleton27]).reshape(7, 2).T
         skeleton_contributions.append(current_contribution)
 
     return skeleton_contributions
@@ -505,6 +520,7 @@ def amplitudes_to_vector_ea(r1, r2):
 def eaccsd_matvec(eom, vector, imds=None, diag=None):
     # Ref: Nooijen and Bartlett, J. Chem. Phys. 102, 3629 (1994) Eqs.(30)-(31)
     if imds is None: imds = eom.make_imds()
+    exit()
     nocc = eom.nocc
     nmo = eom.nmo
     nvir = nmo - nocc
@@ -954,10 +970,17 @@ class _IMDS:
 
         t1, t2, eris = self.t1, self.t2, self.eris
 
+        nocc, nvir = t1.shape
+        self.feri = lib.H5TmpFile()
+        self.Wvvvv_new = self.feri.create_dataset('vvvv', (nvir,nvir,nvir,nvir), 'f8')
+        exit()
+
         # 3 or 4 virtuals
         self.Wvovv = imd.Wvovv(t1, t2, eris)
         self.Wvvvv = imd.Wvvvv(t1, t2, eris)
-        self.Wvvvo = imd.Wvvvo(t1, t2, eris,self.Wvvvv)
+        self.Wvvvv_new = imd.Wvvvv_new(t1, t2, eris)
+        self.Wvvvv = self.Wvvvv_new
+        self.Wvvvo = imd.Wvvvo(t1, t2, eris, self.Wvvvv)
 
         self.made_ea_imds = True
         logger.timer_debug1(self, 'EOM-CCSD EA intermediates', *cput0)
