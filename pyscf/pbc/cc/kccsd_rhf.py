@@ -564,7 +564,7 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
                 Hr1 += -2.*einsum('klid,kld->i',imds.Wooov[kk,kl,kshift],r2[kk,kl])
                 Hr1 +=     einsum('lkid,kld->i',imds.Wooov[kl,kk,kshift],r2[kk,kl])
 
-        Hr2 = np.zeros(r2.shape, dtype=t1.dtype)
+        Hr2 = np.zeros(r2.shape, dtype=np.complex128)
         # 2h1p-1h block
         for ki in range(nkpts):
             for kj in range(nkpts):
@@ -760,7 +760,7 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
             assert partition in ['mp','full']
         self.ea_partition = partition
         evals = np.zeros((len(kptlist),nroots), np.float)
-        evecs = np.zeros((len(kptlist),nroots,size), np.complex)
+        evecs = np.zeros((len(kptlist),nroots,size), np.complex128)
 
         for k,kshift in enumerate(kptlist):
             self.kshift = kshift
