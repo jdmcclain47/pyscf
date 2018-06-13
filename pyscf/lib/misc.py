@@ -304,6 +304,9 @@ def tril_product(*iterables, **kwds):
     '''
     repeat = kwds.get('repeat', 1)
     tril_idx = kwds.get('tril_idx', [])
+    kwarg_not_found = [k for k in kwds.keys() if k not in ['repeat', 'tril_idx']]
+    if len(kwarg_not_found) > 0:
+        raise ValueError('No keyword arguments found for %s' % kwarg_not_found)
     niterables = len(iterables) * repeat
     ntril_idx = len(tril_idx)
 
