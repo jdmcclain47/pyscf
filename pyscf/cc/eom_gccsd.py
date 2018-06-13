@@ -224,8 +224,8 @@ def get_t3p2_amplitude_contribution(eom, t1, t2, eris=None, inplace=False):
     eia = foo[:, None] - fvv[None, :]
     eijab = eia[:, None, :, None] + eia[None, :, None, :]
 
-    for a, b, c in tril_product(range(nvir), repeat=3, tril_idx=[1,2]):
-    #for a, b, c in tril_product(range(nvir), repeat=3):
+    #for a, b, c in tril_product(range(nvir), repeat=3, tril_idx=[1,2]):
+    for a, b, c in tril_product(range(nvir), repeat=3):
         tmp_ijk  = lib.einsum('dk,ijd->ijk', vvvo[b, c], t2[:, :, a])
         tmp_ijk -= lib.einsum('mkj,im->ijk', vooo[c], t2[:, :, a, b])
 
@@ -244,34 +244,29 @@ def get_t3p2_amplitude_contribution(eom, t1, t2, eris=None, inplace=False):
         eijkabc = eijk - fvv[a] - fvv[b] - fvv[c]
 
         bc_fac = 1.
-        if b != c:
-            bc_fac = 2.
-        pt1[:, a] += bc_fac * 0.25 * lib.einsum('ijk,jk->i', tmp_ijk / eijkabc, oovv[:, :, b, c]) # / eia[:, a]
+        #if b != c:
+        #    bc_fac = 2.
+        pt1[:, a] += bc_fac * 0.25 * lib.einsum('ijk,jk->i', tmp_ijk / eijkabc, oovv[:, :, b, c]) / eia[:, a]
 
-        pt2[:, :, a, b] += bc_fac * lib.einsum('ijk,kc->ij', tmp_ijk / eijkabc, fov) # / eijab[:, :, a, b]
+        pt2[:, :, a, b] += bc_fac * lib.einsum('ijk,kc->ij', tmp_ijk / eijkabc, fov) / eijab[:, :, a, b]
 
         # The following is implemented using the following change of variables in order to
         # reuse tmp_ijk: [m, e, f, b] -> [k, b, c, d]
         #         P(ab) ('ijmaef,mbfe->ijab') = ('ijkabc,kdcb->ijad') - ('ijkabc,kdcb->ijda')
         pt2[:, :, a, :] += bc_fac * 0.5 * lib.einsum('ijk,kd->ijd', tmp_ijk / eijkabc,
-                ovvv[:, :, c, b]) # / eijab[:, :, a, :]
+                ovvv[:, :, c, b]) / eijab[:, :, a, :]
         pt2[:, :, :, a] -= bc_fac * 0.5 * lib.einsum('ijk,kd->ijd', tmp_ijk / eijkabc,
-                ovvv[:, :, c, b]) # / eijab[:, :, :, a]
+                ovvv[:, :, c, b]) / eijab[:, :, :, a]
 
         # The following is implemented using the following change of variables in order to
         # reuse tmp_ijk: [m, n, e, j] -> [j, k, c, l]
         #         P(ij) ('imnabe,mnje->ijab') = ('ijkabc,jklc->ilab') - ('ijkabc,jklc->liab')
-        pt2[:, :, a, b] -= bc_fac * 0.5 * lib.einsum('ijk,jkl->il', tmp_ijk / eijkabc, ooov[:, :, :, c]) # / eijab[:, :, a, b]
-        pt2[:, :, a, b] += bc_fac * 0.5 * lib.einsum('ijk,jkl->li', tmp_ijk / eijkabc, ooov[:, :, :, c]) # / eijab[:, :, a, b]
+        pt2[:, :, a, b] -= bc_fac * 0.5 * lib.einsum('ijk,jkl->il', tmp_ijk / eijkabc, ooov[:, :, :, c]) / eijab[:, :, a, b]
+        pt2[:, :, a, b] += bc_fac * 0.5 * lib.einsum('ijk,jkl->li', tmp_ijk / eijkabc, ooov[:, :, :, c]) / eijab[:, :, a, b]
 
-    pt1 /= eia
-    pt2 /= eijab
-
-    pt1 += t1
-    pt2 += t2
-    #if not inplace:
-    #    pt1 += t1
-    #    pt2 += t2
+    if not inplace:
+        pt1 += t1
+        pt2 += t2
 
     delta_ccsd_energy = gccsd.energy(None, pt1, pt2, eris) - ccsd_energy
     logger.info(eom, 'CCSD energy T3[2] correction : %14.8e', delta_ccsd_energy)
