@@ -19,6 +19,7 @@ import numpy as np
 from pyscf import lib
 from pyscf.lib import logger
 from pyscf.cc import ccsd
+from pyscf.cc import gccsd
 from pyscf.cc import eom_rccsd
 from pyscf.cc import gintermediates as imd
 
@@ -111,6 +112,164 @@ def ipccsd_diag(eom, imds=None):
     vector = amplitudes_to_vector_ip(Hr1, Hr2)
     return vector
 
+def get_t3p2_amplitude_contribution(eom, t1, t2, eris=None, inplace=False):
+    """Calculates T1, T2 amplitudes corrected by second-order T3 contribution
+
+    Args:
+        eom (:obj:`EOMIP`):
+            Object containing coupled-cluster results.
+        t1 (:obj:`ndarray`):
+            T1 amplitudes.
+        t2 (:obj:`ndarray`):
+            T2 amplitudes from which the T3[2] amplitudes are formed.
+        eris (:obj:`_PhysicistsERIs`):
+            Antisymmetrized electron-repulsion integrals in physicist's notation.
+        inplace (bool):
+            Whether to change the t1, t2 inplace.  Will overwrite input.
+
+    Returns:
+        delta_ccsd (float):
+            Difference of perturbed and unperturbed CCSD ground-state energy,
+                energy(T1 + T1[2], T2 + T2[2]) - energy(T1, T2)
+        pt1 (:obj:`ndarray`):
+            Perturbatively corrected T1 amplitudes.
+        pt2 (:obj:`ndarray`):
+            Perturbatively corrected T2 amplitudes.
+
+    Reference:
+        D. A. Matthews, J. F. Stanton "A new approach to approximate..."
+            JCP 145, 124102 (2016), Equation 14
+        Shavitt and Bartlett "Many-body Methods in Physics and Chemistry"
+            2009, Equation 10.33
+    """
+    #assert (eom.partition == None)
+    if eris is None:
+        eris = eom._cc.ao2mo()
+    fock = eris.fock
+    nocc = eom.nocc
+    nmo = eom.nmo
+    nvir = nmo - nocc
+
+    fov = fock[:nocc, nocc:]
+    foo = fock[:nocc, :nocc].diagonal()
+    fvv = fock[nocc:, nocc:].diagonal()
+
+    oovv = _cp(eris.oovv)
+    ovvv = _cp(eris.ovvv)
+    ooov = _cp(eris.ooov)
+    vooo = _cp(ooov).conj().transpose(3, 2, 1, 0)
+    vvvo = _cp(ovvv).conj().transpose(3, 2, 1, 0)
+
+    ccsd_energy = gccsd.energy(None, t1, t2, eris)
+
+    # Method 1
+
+    #def pi_jk(tmp):
+    #    return tmp - tmp.transpose(1,0,2,3,4,5) - tmp.transpose(2,1,0,3,4,5)
+    #def pk_ij(tmp):
+    #    return tmp - tmp.transpose(2,1,0,3,4,5) - tmp.transpose(0,2,1,3,4,5)
+
+    #def pa_bc(tmp):
+    #    return tmp - tmp.transpose(0,1,2,4,3,5) - tmp.transpose(0,1,2,5,4,3)
+    #def pc_ab(tmp):
+    #    return tmp - tmp.transpose(0,1,2,5,4,3) - tmp.transpose(0,1,2,3,5,4)
+
+    #tmp_t3  = pk_ij(pa_bc(lib.einsum('bcdk,ijad->ijkabc', vvvo, t2)))
+    #tmp_t3 -= pi_jk(pc_ab(lib.einsum('clkj,ilab->ijkabc', vooo, t2)))
+    #eia = foo[:, None] - fvv[None, :]
+    #eijab = eia[:, None, :, None] + eia[None, :, None, :]
+    #eijkabc = eijab[:, :, None, :, :, None] + eia[None, None, :, None, None, :]
+    #tmp_t3 /= eijkabc
+
+    # Method 2
+
+    #tmp_t3 = lib.einsum('bcdk,ijad->ijkabc', vvvo, t2)
+    #tmp_t3 -= lib.einsum('cmkj,imab->ijkabc', vooo, t2)
+    ## P(ijk)
+    #tmp_t3 = (tmp_t3 + tmp_t3.transpose(1, 2, 0, 3, 4, 5) +
+    #                   tmp_t3.transpose(2, 0, 1, 3, 4, 5))
+    ## P(abc)
+    #tmp_t3 = (tmp_t3 + tmp_t3.transpose(0, 1, 2, 4, 5, 3) +
+    #                   tmp_t3.transpose(0, 1, 2, 5, 3, 4))
+    #eia = foo[:, None] - fvv[None, :]
+    #eijab = eia[:, None, :, None] + eia[None, :, None, :]
+    #eijkabc = eijab[:, :, None, :, :, None] + eia[None, None, :, None, None, :]
+    #tmp_t3 /= eijkabc
+
+    #pt1 = 0.25 * lib.einsum('mnef,imnaef->ia', oovv, tmp_t3)
+
+    #pt2 = lib.einsum('ijmabe,me->ijab', tmp_t3, fov)
+    #tmp = 0.5 * lib.einsum('ijmaef,mbfe->ijab', tmp_t3, ovvv)
+    #tmp = tmp - tmp.transpose(0, 1, 3, 2)  # P(ab)
+    #pt2 += tmp
+    #tmp = - 0.5 * lib.einsum('imnabe,mnje->ijab', tmp_t3, ooov)
+    #tmp = tmp - tmp.transpose(1, 0, 2, 3)  # P(ij)
+    #pt2 += tmp
+
+    #eia = foo[:, None] - fvv[None, :]
+    #eijab = eia[:, None, :, None] + eia[None, :, None, :]
+
+    #pt1 /= eia
+    #pt2 /= eijab
+
+    from pyscf.lib.misc import tril_product
+    pt1 = np.zeros_like(t1)
+    pt2 = np.zeros_like(t2)
+    eijk = foo[:, None, None] + foo[None, :, None] + foo[None, None, :]
+    for a, b, c in tril_product(range(nvir), repeat=3, tril_idx=[1,2]):
+    #for a, b, c in tril_product(range(nvir), repeat=3):
+        tmp_ijk  = lib.einsum('dk,ijd->ijk', vvvo[b, c], t2[:, :, a])
+        tmp_ijk -= lib.einsum('mkj,im->ijk', vooo[c], t2[:, :, a, b])
+
+        # a -> b -> c
+        tmp_ijk += lib.einsum('dk,ijd->ijk', vvvo[c, a], t2[:, :, b])
+        tmp_ijk -= lib.einsum('mkj,im->ijk', vooo[a], t2[:, :, b, c])
+
+        # a -> c -> b
+        tmp_ijk += lib.einsum('dk,ijd->ijk', vvvo[a, b], t2[:, :, c])
+        tmp_ijk -= lib.einsum('mkj,im->ijk', vooo[b], t2[:, :, c, a])
+
+        # P(ijk)
+        tmp_ijk = (tmp_ijk + tmp_ijk.transpose(1, 2, 0) +
+                             tmp_ijk.transpose(2, 0, 1))
+
+        eijkabc = eijk - fvv[a] - fvv[b] - fvv[c]
+
+        bc_fac = 1.
+        if b != c:
+            bc_fac = 2.
+        pt1[:, a] += bc_fac * 0.25 * lib.einsum('ijk,jk->i', tmp_ijk / eijkabc, oovv[:, :, b, c])
+
+        pt2[:, :, a, b] += bc_fac * lib.einsum('ijk,kc->ij', tmp_ijk / eijkabc, fov)
+
+        # The following is implemented using the following change of variables in order to
+        # reuse tmp_ijk: [m, e, f, b] -> [k, b, c, d]
+        #         P(ab) ('ijmaef,mbfe->ijab') = ('ijkabc,kdcb->ijad') - ('ijkabc,kdcb->ijda')
+        pt2[:, :, a, :] += bc_fac * 0.5 * lib.einsum('ijk,kd->ijd', tmp_ijk / eijkabc,
+                                                     ovvv[:, :, c, b])
+        pt2[:, :, :, a] -= bc_fac * 0.5 * lib.einsum('ijk,kd->ijd', tmp_ijk / eijkabc,
+                                                     ovvv[:, :, c, b])
+
+        # The following is implemented using the following change of variables in order to
+        # reuse tmp_ijk: [m, n, e, j] -> [j, k, c, l]
+        #         P(ij) ('imnabe,mnje->ijab') = ('ijkabc,jklc->ilab') - ('ijkabc,jklc->liab')
+        pt2[:, :, a, b] -= bc_fac * 0.5 * lib.einsum('ijk,jkl->il', tmp_ijk / eijkabc, ooov[:, :, :, c])
+        pt2[:, :, a, b] += bc_fac * 0.5 * lib.einsum('ijk,jkl->li', tmp_ijk / eijkabc, ooov[:, :, :, c])
+
+    eia = foo[:, None] - fvv[None, :]
+    eijab = eia[:, None, :, None] + eia[None, :, None, :]
+
+    pt1 /= eia
+    pt2 /= eijab
+
+    # We dont' want to overwrite the input t1/t2, so we use copy
+    t1 = t1.copy() + pt1
+    t2 = t2.copy() + pt2
+
+    delta_ccsd_energy = gccsd.energy(None, t1, t2, eris) - ccsd_energy
+    logger.info(eom, 'CCSD energy T3[2] correction : %14.8e', delta_ccsd_energy)
+    return delta_ccsd_energy, t1, t2
+
 def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs,
                 eris=None, type1=False, type2=False):
     """Calculates perturbative correction IP-CCSD*
@@ -155,7 +314,7 @@ def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs,
     nmo = eom.nmo
     nvir = nmo - nocc
 
-    fov = fock[:nocc, nocc:].diagonal()
+    fov = fock[:nocc, nocc:]
     foo = fock[:nocc, :nocc].diagonal()
     fvv = fock[nocc:, nocc:].diagonal()
 
@@ -315,7 +474,7 @@ def ipccsd_star_skeletons(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs,
     nmo = eom.nmo
     nvir = nmo - nocc
 
-    fov = fock[:nocc, nocc:].diagonal()
+    fov = fock[:nocc, nocc:]
     foo = fock[:nocc, :nocc].diagonal()
     fvv = fock[nocc:, nocc:].diagonal()
 
@@ -450,26 +609,12 @@ def ipccsd_star_skeletons(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs,
         skeleton16 = energy_fac * lib.einsum('ijkab,ijkab,ijkab', lijkab1, rijkab, denom)
         skeleton26 = energy_fac * lib.einsum('ijkab,ijkab,ijkab', lijkab2, rijkab, denom)
 
-        #if type 3
-        logger.info(eom, "Skeleton 7 (type 3)")
-        tmp = 0.5 * lib.einsum('fegi,abef->igab', vvvo, vvvv)
-        tmp2 = lib.einsum('igab,jkg->ijkab', tmp, r2)
-        rijkab = pijk(tmp2)
-
-        tmp = 0.5 * lib.einsum('anlm,lmij->ijan', vooo, oooo)
-        tmp2 = lib.einsum('ijan,nkb->ijkab', tmp, r2)
-        tmp2 = pijk(tmp2)
-        rijkab += - pab(tmp2)
-        skeleton17 = energy_fac * lib.einsum('ijkab,ijkab,ijkab', lijkab1, rijkab, denom)
-        skeleton27 = energy_fac * lib.einsum('ijkab,ijkab,ijkab', lijkab2, rijkab, denom)
-
         current_contribution = np.array([skeleton11, skeleton21,
                                          skeleton12, skeleton22,
                                          skeleton13, skeleton23,
                                          skeleton14, skeleton24,
                                          skeleton15, skeleton25,
-                                         skeleton16, skeleton26,
-                                         skeleton17, skeleton27]).reshape(7, 2).T
+                                         skeleton16, skeleton26]).reshape(6, 2).T
         skeleton_contributions.append(current_contribution)
 
     return skeleton_contributions
@@ -494,8 +639,8 @@ class EOMIP(eom_rccsd.EOMIP):
         nvir = self.nmo - nocc
         return nocc + nocc*(nocc-1)/2*nvir
 
-    def make_imds(self, eris=None):
-        imds = _IMDS(self._cc, eris)
+    def make_imds(self, t1=None, t2=None, eris=None):
+        imds = _IMDS(self._cc, t1, t2, eris)
         imds.make_ip()
         return imds
 
@@ -916,11 +1061,15 @@ class _IMDS:
     # -- rintermediates --> gintermediates
     # -- Loo, Lvv, cc_Fov --> Foo, Fvv, Fov
     # -- One less 2-virtual intermediate
-    def __init__(self, cc, eris=None):
+    def __init__(self, cc, t1=None, t2=None, eris=None):
         self.verbose = cc.verbose
         self.stdout = cc.stdout
-        self.t1 = cc.t1
-        self.t2 = cc.t2
+        if t1 is None:
+            t1 = cc.t1
+        self.t1 = t1
+        if t2 is None:
+            t2 = cc.t2
+        self.t2 = t2
         if eris is None:
             eris = cc.ao2mo()
         self.eris = eris
