@@ -112,7 +112,6 @@ def ipccsd_diag(eom, imds=None):
     vector = amplitudes_to_vector_ip(Hr1, Hr2)
     return vector
 
-@profile
 def get_t3p2_amplitude_contribution(eom, t1, t2, eris=None, inplace=False):
     """Calculates T1, T2 amplitudes corrected by second-order T3 contribution
 
@@ -213,13 +212,16 @@ def get_t3p2_amplitude_contribution(eom, t1, t2, eris=None, inplace=False):
     #pt1 /= eia
     #pt2 /= eijab
 
+    #pt1 += t1
+    #pt2 += t2
+
     from pyscf.lib.misc import tril_product
     if inplace:
         pt1 = t1
         pt2 = t2
     else:
-        pt1 = np.zeros_like(t1)
-        pt2 = np.zeros_like(t2)
+        pt1 = t1.copy()
+        pt2 = t2.copy()
 
     eijk = foo[:, None, None] + foo[None, :, None] + foo[None, None, :]
     eia = foo[:, None] - fvv[None, :]
@@ -273,10 +275,6 @@ def get_t3p2_amplitude_contribution(eom, t1, t2, eris=None, inplace=False):
             if a != b:
                 pt2[:, :, b, a] -= tmp
 
-    if not inplace:
-        pt1 += t1
-        pt2 += t2
-
     delta_ccsd_energy = gccsd.energy(None, pt1, pt2, eris) - ccsd_energy
     logger.info(eom, 'CCSD energy T3[2] correction : %14.8e', delta_ccsd_energy)
     return delta_ccsd_energy, pt1, pt2
@@ -319,6 +317,7 @@ def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs,
     assert (eom.partition == None)
     if eris is None:
         eris = eom._cc.ao2mo()
+    assert(isinstance(eris, gccsd._PhysicistsERIs))
     t1, t2 = eom._cc.t1, eom._cc.t2
     fock = eris.fock
     nocc = eom.nocc
