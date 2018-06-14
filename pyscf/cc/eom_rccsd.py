@@ -20,6 +20,7 @@ from pyscf import lib
 from pyscf import ao2mo
 from pyscf.lib import logger
 from pyscf.cc import ccsd
+from pyscf.cc import rccsd
 from pyscf.cc import rintermediates as imd
 from pyscf import __config__
 
@@ -279,15 +280,148 @@ def ipccsd_diag(eom, imds=None):
     vector = amplitudes_to_vector_ip(Hr1, Hr2)
     return vector
 
+def get_t3p2_amplitude_contribution(eom, t1, t2, eris=None, inplace=False):
+    """Calculates T1, T2 amplitudes corrected by second-order T3 contribution
+
+    Args:
+        eom (:obj:`EOMIP`):
+            Object containing coupled-cluster results.
+        t1 (:obj:`ndarray`):
+            T1 amplitudes.
+        t2 (:obj:`ndarray`):
+            T2 amplitudes from which the T3[2] amplitudes are formed.
+        eris (:obj:`_PhysicistsERIs`):
+            Antisymmetrized electron-repulsion integrals in physicist's notation.
+        inplace (bool):
+            Whether to change the t1, t2 inplace.  Will overwrite input.
+
+    Returns:
+        delta_ccsd (float):
+            Difference of perturbed and unperturbed CCSD ground-state energy,
+                energy(T1 + T1[2], T2 + T2[2]) - energy(T1, T2)
+        pt1 (:obj:`ndarray`):
+            Perturbatively corrected T1 amplitudes.
+        pt2 (:obj:`ndarray`):
+            Perturbatively corrected T2 amplitudes.
+
+    Reference:
+        D. A. Matthews, J. F. Stanton "A new approach to approximate..."
+            JCP 145, 124102 (2016), Equation 14
+        Shavitt and Bartlett "Many-body Methods in Physics and Chemistry"
+            2009, Equation 10.33
+    """
+    if eris is None:
+        eris = eom._cc.ao2mo()
+    fock = eris.fock
+    nocc = eom.nocc
+    nmo = eom.nmo
+    nvir = nmo - nocc
+
+    fov = fock[:nocc, nocc:]
+    foo = fock[:nocc, :nocc].diagonal()
+    fvv = fock[nocc:, nocc:].diagonal()
+
+    # Converting to Physicist notation.
+    oovv = _cp(eris.ovov).transpose(0, 2, 1, 3)
+    ovvv = _cp(eris.get_ovvv()).transpose(0, 2, 1, 3)
+    oovo = _cp(eris.ovoo).transpose(0, 2, 1, 3)
+    ooov = oovo.transpose(1, 0, 3, 2)
+    vooo = ooov.conj().transpose(3, 2, 1, 0)
+    vvvo = _cp(ovvv).conj().transpose(3, 2, 1, 0)
+
+    ccsd_energy = rccsd.energy(None, t1, t2, eris)
+
+    if inplace:
+        pt1 = t1
+        pt2 = t2
+    else:
+        pt1 = np.zeros_like(t1)
+        pt2 = np.zeros_like(t2)
+    tmp_t3 = lib.einsum('bcdk,ijad->ijkabc', vvvo, t2)
+    tmp_t3 -= lib.einsum('cmkj,imab->ijkabc', vooo, t2)
+
+    # P(ia,jb,kc)
+    tmp_t3 = (tmp_t3 + tmp_t3.transpose(0, 2, 1, 3, 5, 4) +
+                       tmp_t3.transpose(1, 0, 2, 4, 3, 5) +
+                       tmp_t3.transpose(1, 2, 0, 4, 5, 3) +
+                       tmp_t3.transpose(2, 0, 1, 5, 3, 4) +
+                       tmp_t3.transpose(2, 1, 0, 5, 4, 3))
+
+    eia = foo[:, None] - fvv[None, :]
+    eijab = eia[:, None, :, None] + eia[None, :, None, :]
+    eijkabc = eijab[:, :, None, :, :, None] + eia[None, None, :, None, None, :]
+    tmp_t3 /= eijkabc
+
+    Soovv = 2. * oovv - oovv.transpose(0, 1, 3, 2)
+    St3 = tmp_t3 - tmp_t3.transpose(0, 1, 2, 4, 3, 5)
+    pt1 = lib.einsum('mnef,imnaef->ia', Soovv, St3)
+
+    pt2 = - 2. * lib.einsum('imnabe,mnje->ijab', tmp_t3, ooov)
+    pt2 += lib.einsum('imnabe,nmje->ijab', tmp_t3, ooov)
+    pt2 += lib.einsum('inmeab,mnje->ijab', tmp_t3, ooov)
+    pt2 += lib.einsum('ijmabe,me->ijab', tmp_t3, fov)
+    pt2 -= lib.einsum('ijmaeb,me->ijab', tmp_t3, fov)
+    pt2 += 2. * lib.einsum('ijmaef,mbfe->ijab', tmp_t3, ovvv)
+    pt2 -= lib.einsum('ijmaef,mbef->ijab', tmp_t3, ovvv)
+    pt2 -= lib.einsum('imjfae,mbfe->ijab', tmp_t3, ovvv)
+    pt2 = pt2 + pt2.transpose(1, 0, 3, 2)
+
+    eia = foo[:, None] - fvv[None, :]
+    eijab = eia[:, None, :, None] + eia[None, :, None, :]
+
+    pt1 /= eia
+    pt2 /= eijab
+
+    pt1 += t1
+    pt2 += t2
+
+    delta_ccsd_energy = rccsd.energy(None, pt1, pt2, eris) - ccsd_energy
+    logger.info(eom, 'CCSD energy T3[2] correction : %14.8e', delta_ccsd_energy)
+
+    return delta_ccsd_energy, pt1, pt2
+
 def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs, eris=None):
+    """Calculates perturbative correction IP-CCSD*
+
+    Args:
+        eom (:obj:`EOMIP`):
+            Object containing coupled-cluster results.
+        ipccsd_evals (array-like):
+            Right EOM-IP-CCSD eigenvalues; should be same as left eigenvalues.
+        ipccsd_evecs (array-like):
+            List of right EOM-IP-CCSD eigenvectors.
+        lipccsd_evecs (array-like):
+            List of left EOM-IP-CCSD eigenvectors.
+        eris (:obj:`_ChemistsERIs`):
+            Antisymmetrized electron-repulsion integrals in physicist's notation.
+
+    Returns:
+        e_star (list of float):
+            The return value. True for success, False otherwise.
+
+    Notes:
+        The user should check to make sure the right and left eigenvalues
+        before running the perturbative correction.
+
+        The 2hp left and right amplitudes are assumed to be of the form s^{a }_{ij},
+        i.e. the (ia) indices are coupled.
+
+    Reference:
+        Saeh, Stanton "...energy surfaces of radicals" JCP 111, 8275 (1999)
+
+    """
     assert(eom.partition == None)
     if eris is None:
         eris = eom._cc.ao2mo()
+    assert(isinstance(eris, ccsd._ChemistsERIs))
     t1, t2 = eom._cc.t1, eom._cc.t2
     fock = eris.fock
-    nocc, nvir = t1.shape
+    nocc = eom.nocc
+    nmo = eom.nmo
+    nvir = nmo - nocc
 
     foo = fock[:nocc,:nocc].diagonal()
+    fov = fock[:nocc, nocc:]
     fvv = fock[nocc:,nocc:].diagonal()
 
     oovv = _cp(eris.ovov).transpose(0,2,1,3)
@@ -305,22 +439,31 @@ def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs, eris=None):
 
     ipccsd_evecs  = np.array(ipccsd_evecs)
     lipccsd_evecs = np.array(lipccsd_evecs)
-    e = []
-    for _eval, _evec, _levec in zip(ipccsd_evals, ipccsd_evecs, lipccsd_evecs):
-        l1, l2 = eom.vector_to_amplitudes(_levec)
-        r1, r2 = eom.vector_to_amplitudes(_evec)
+    e_star = []
+    for ip_eval, ip_evec, ip_levec in zip(ipccsd_evals, ipccsd_evecs, lipccsd_evecs):
+        # Enforcing <L|R> = 1
+        l1, l2 = vector_to_amplitudes_ip(ip_levec, nmo, nocc)
+        r1, r2 = vector_to_amplitudes_ip(ip_evec, nmo, nocc)
         ldotr = np.dot(l1, r1) + np.dot(l2.ravel(), r2.ravel())
+
+        logger.info(eom, 'Left-right amplitude overlap : %14.8e', ldotr)
+        if abs(ldotr) < 1e-7:
+            logger.warn(eom, 'Small %s left-right amplitude overlap. Results '
+                             'may be inaccurate.', ldotr)
+
         l1 /= ldotr
         l2 /= ldotr
+
         l2 = 1./3*(l2 + 2.*l2.transpose(1,0,2))
 
-        _eijkab = eijkab + _eval
-        _eijkab = 1./_eijkab
+        # Denominator + eigenvalue(IP-CCSD)
+        denom = eijkab + ip_eval
+        denom = 1. / denom
 
-        lijkab = 0.5*np.einsum('ijab,k->ijkab', oovv, l1)
-        lijkab += lib.einsum('ieab,jke->ijkab', ovvv, l2)
+        lijkab = 0.5 * np.einsum('ijab,k->ijkab', oovv, l1)
         lijkab += -lib.einsum('kjmb,ima->ijkab', ooov, l2)
         lijkab += -lib.einsum('ijmb,mka->ijkab', ooov, l2)
+        lijkab += lib.einsum('ieab,jke->ijkab', ovvv, l2)
         lijkab = lijkab + lijkab.transpose(1,0,2,4,3)
 
         tmp = np.einsum('mbke,m->bke', ovov, r1)
@@ -329,9 +472,9 @@ def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs, eris=None):
         rijkab += -lib.einsum('bej,ikae->ijkab', tmp, t2)
         tmp = np.einsum('mnjk,n->mjk', oooo, r1)
         rijkab += lib.einsum('mjk,imab->ijkab', tmp, t2)
-        rijkab += lib.einsum('baei,kje->ijkab', vvvo, r2)
         rijkab += -lib.einsum('bmjk,mia->ijkab', vooo, r2)
         rijkab += -lib.einsum('bmji,kma->ijkab', vooo, r2)
+        rijkab += lib.einsum('baei,kje->ijkab', vvvo, r2)
         rijkab = rijkab + rijkab.transpose(1,0,2,4,3)
 
         lijkab = 4. * lijkab \
@@ -341,12 +484,12 @@ def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs, eris=None):
                + 1. * lijkab.transpose(1,2,0,3,4) \
                + 1. * lijkab.transpose(2,0,1,3,4)
 
-        deltaE = 0.5 * np.einsum('ijkab,ijkab,ijkab', lijkab, rijkab, _eijkab)
+        deltaE = 0.5 * np.einsum('ijkab,ijkab,ijkab', lijkab, rijkab, denom)
         deltaE = deltaE.real
         logger.info(eom, "Exc. energy, delta energy = %16.12f, %16.12f",
-                    _eval + deltaE, deltaE)
-        e.append(_eval + deltaE)
-    return e
+                    ip_eval + deltaE, deltaE)
+        e_star.append(ip_eval + deltaE)
+    return e_star
 
 class EOMIP(EOM):
     def get_init_guess(self, nroots=1, koopmans=True, diag=None):
