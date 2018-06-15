@@ -337,6 +337,7 @@ def get_t3p2_amplitude_contribution(eom, t1, t2, eris=None, inplace=False):
     else:
         pt1 = np.zeros_like(t1)
         pt2 = np.zeros_like(t2)
+
     tmp_t3 = lib.einsum('bcdk,ijad->ijkabc', vvvo, t2)
     tmp_t3 -= lib.einsum('cmkj,imab->ijkabc', vooo, t2)
 
@@ -352,18 +353,54 @@ def get_t3p2_amplitude_contribution(eom, t1, t2, eris=None, inplace=False):
     eijkabc = eijab[:, :, None, :, :, None] + eia[None, None, :, None, None, :]
     tmp_t3 /= eijkabc
 
-    Soovv = 2. * oovv - oovv.transpose(0, 1, 3, 2)
-    St3 = tmp_t3 - tmp_t3.transpose(0, 1, 2, 4, 3, 5)
-    pt1 = lib.einsum('mnef,imnaef->ia', Soovv, St3)
+    # Easy way, but lots of memory usage...
+    #
+    #Soovv = 2. * oovv - oovv.transpose(0, 1, 3, 2)
+    #St3 = tmp_t3 - tmp_t3.transpose(0, 1, 2, 4, 3, 5)
+    #pt1 = lib.einsum('mnef,imnaef->ia', Soovv, St3)
 
-    pt2 = - 2. * lib.einsum('imnabe,mnje->ijab', tmp_t3, ooov)
-    pt2 += lib.einsum('imnabe,nmje->ijab', tmp_t3, ooov)
-    pt2 += lib.einsum('inmeab,mnje->ijab', tmp_t3, ooov)
-    pt2 += lib.einsum('ijmabe,me->ijab', tmp_t3, fov)
-    pt2 -= lib.einsum('ijmaeb,me->ijab', tmp_t3, fov)
-    pt2 += 2. * lib.einsum('ijmaef,mbfe->ijab', tmp_t3, ovvv)
-    pt2 -= lib.einsum('ijmaef,mbef->ijab', tmp_t3, ovvv)
-    pt2 -= lib.einsum('imjfae,mbfe->ijab', tmp_t3, ovvv)
+    #pt2 = - 2. * lib.einsum('imnabe,mnje->ijab', tmp_t3, ooov)
+    #pt2 += lib.einsum('imnabe,nmje->ijab', tmp_t3, ooov)
+    #pt2 += lib.einsum('inmeab,mnje->ijab', tmp_t3, ooov)
+    #pt2 += lib.einsum('ijmabe,me->ijab', tmp_t3, fov)
+    #pt2 -= lib.einsum('ijmaeb,me->ijab', tmp_t3, fov)
+    #pt2 += 2. * lib.einsum('ijmaef,mbfe->ijab', tmp_t3, ovvv)
+    #pt2 -= lib.einsum('ijmaef,mbef->ijab', tmp_t3, ovvv)
+    #pt2 -= lib.einsum('imjfae,mbfe->ijab', tmp_t3, ovvv)
+
+    from pyscf.lib.misc import tril_product
+    for a, b, c in tril_product(range(nvir), repeat=3, tril_idx=[1, 2]):
+        Soovv = 2. * oovv[:, :, b, c] - oovv[:, :, c, b]
+        t3 = tmp_t3[:, :, :, a, b, c]
+
+        bc_fac = 1.
+        if b != c:
+            bc_fac = 2.
+
+        pt1[:, a] += bc_fac * lib.einsum('mn,imn->i', Soovv, t3)
+        pt1[:, a] -= 0.5 * bc_fac * lib.einsum('mn,min->i', Soovv, t3)
+        pt1[:, a] -= 0.5 * bc_fac * lib.einsum('nm,mni->i', Soovv, t3)
+
+    for a, b, c in tril_product(range(nvir), repeat=3, tril_idx=[]):
+        t3 = tmp_t3[:, :, :, a, b, c]
+
+        Sooov = 2. * ooov[:, :, :, c] - ooov[:, :, :, c].transpose(1, 0, 2)
+        tmp = lib.einsum('imn,mnj->ij', t3, Sooov)
+        pt2[:, :, a, b] -= tmp
+
+        tmp = lib.einsum('ijm,m->ij', t3, fov[:, c])
+        pt2[:, :, a, b] += tmp
+        tmp = lib.einsum('imj,m->ij', t3, fov[:, c])
+        pt2[:, :, a, b] -= tmp
+
+        tmp = lib.einsum('nmi,mnj->ij', t3, ooov[:, :, :, c])
+        pt2[:, :, a, b] += tmp
+
+        pt2[:, :, a, :] -= lib.einsum('mij,mf->ijf', t3, ovvv[:, :, b, c])
+
+        Sovvv = 2. * ovvv[:, :, b, c] - ovvv[:, :, c, b]
+        pt2[:, :, a, :] += lib.einsum('imj,mf->ijf', t3, Sovvv)
+
     pt2 = pt2 + pt2.transpose(1, 0, 3, 2)
 
     eia = foo[:, None] - fvv[None, :]
