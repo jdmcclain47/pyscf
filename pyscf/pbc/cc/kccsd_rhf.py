@@ -736,6 +736,105 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         size = nvir + nkpts**2 * nvir**2 * nocc
         return size
 
+    def ipccsd_star(self, ipccsd_evals, ipccsd_evecs, lipccsd_evecs, kptlist=None):
+        """Calculates perturbative correction IP-CCSD*
+
+        Args:
+            eom (:obj:`EOMIP`):
+                Object containing coupled-cluster results.
+            ipccsd_evals (array-like):
+                Right EOM-IP-CCSD eigenvalues; should be same as left eigenvalues.
+            ipccsd_evecs (array-like):
+                List of right EOM-IP-CCSD eigenvectors.
+            lipccsd_evecs (array-like):
+                List of left EOM-IP-CCSD eigenvectors.
+            kptlist (list):
+                List of k-point indices for which eigenvalue perturbations are requested.
+
+        Returns:
+            e_star (list of :obj:`ndarray`):
+                The IP-CCSD* energies at each kpoint.
+
+        Notes:
+            The user should check to make sure the right and left eigenvalues agree
+            before running the perturbative correction.
+
+            The 2hp left and right amplitudes are assumed to be of the form s^{a }_{ij},
+            i.e. the (ia) indices are coupled.
+
+        Reference:
+            Saeh, Stanton "...energy surfaces of radicals" JCP 111, 8275 (1999)
+
+        """
+        time0 = time.clock(), time.time()
+
+        assert(self.ip_partition == None)
+        eris = self.eris
+        assert(isinstance(eris, ccsd._PhysicistsERIs))
+        nocc = self.nocc
+        nvir = self.nmo - nocc
+        nkpts = self.nkpts
+        size = nocc + nkpts*nkpts*nocc*nocc*nvir
+        kconserv = self.kconserv
+
+        assert(ipccsd_evecs.shape[1] == size)
+        assert(ipccsd_evecs.shape == lipccsd_evecs.shape)
+        if ((ipccsd_evecs.shape[0] == 1 and not hasattr(self, 'kshift')) or
+            (ipccsd_evecs.shape[0] > 1 and kptlist is None)):
+            raise RuntimeError('K-point list at which eigenvalues were calculated is not found. '
+                               'Please set `kshift` or provide `kptlist`.\nipccsd vec shape = %s'
+                               % ipccsd_evecs.shape)
+
+        if kptlist is not None:
+            raise NotImplementedError
+
+        kshift = self.kshift
+        t1, t2 = self.t1, self.t2
+        foo = eris.fock[:,:nocc,:nocc]
+        fvv = eris.fock[:,nocc:,nocc:]
+
+        ipccsd_evecs  = np.array(ipccsd_evecs)
+        lipccsd_evecs = np.array(lipccsd_evecs)
+        e_star = []
+        for ip_eval, ip_evec, ip_levec in zip(ipccsd_evals, ipccsd_evecs, lipccsd_evecs):
+            # Enforcing <L|R> = 1
+            l1, l2 = vector_to_amplitudes_ip(ip_levec, nmo, nocc)
+            r1, r2 = vector_to_amplitudes_ip(ip_evec, nmo, nocc)
+            ldotr = np.dot(l1, r1) + np.dot(l2.ravel(), r2.ravel())
+
+            logger.info(eom, 'Left-right amplitude overlap : %14.8e', ldotr)
+            if abs(ldotr) < 1e-7:
+                logger.warn(eom, 'Small %s left-right amplitude overlap. Results '
+                                 'may be inaccurate.', ldotr)
+
+            l1 /= ldotr
+            l2 /= ldotr
+
+            # Transposing L^{a }_{ij} operator
+            l2_t = numpy.zeros_like(l2)
+            for ki in range(nkpts):
+                for kj in range(nkpts):
+                    ka = kconserv[ki,kshift,kj]
+                    l2_t[ki, kj] = l2[kj, ki].transpose(1, 0, 2)
+
+            ldotr = numpy.dot(l1.ravel(),r1.ravel()) + numpy.dot(l2.ravel(),r2.ravel())
+            l2 = (l2 + 2.*l2_t)/3.
+            l2_t = None
+
+            l1 /= ldotr
+            l2 /= ldotr
+
+            #l1 = l1.reshape(-1)
+            #r1 = r1.reshape(-1)
+
+            for ki, kj, ka, kb in itertools.product(range(nkpts), repeat=4):
+                #if ka > kb:
+                #    continue
+                kklist = tools.get_kconserv3(self._scf.cell, self.kpts,
+                                             [ka, kb ,kshift, ki, kj])
+                lijkab_tmp = numpy.empty((nocc,nocc,nocc,nvir,nvir), dtype=t2.dtype)
+                rijkab_tmp = numpy.empty((nocc,nocc,nocc,nvir,nvir), dtype=t2.dtype)
+
     def eaccsd(self, nroots=1, koopmans=False, guess=None, partition=None,
                kptlist=None):
         '''Calculate (N+1)-electron charged excitations via EA-EOM-CCSD.
