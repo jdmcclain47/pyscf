@@ -162,12 +162,9 @@ def get_t3p2_amplitude_contribution(eom, t1, t2, eris=None, inplace=False):
 
     ccsd_energy = gccsd.energy(None, t1, t2, eris)
 
-    if inplace:
-        pt1 = t1
-        pt2 = t2
-    else:
-        pt1 = t1.copy()
-        pt2 = t2.copy()
+    #assert(inplace == False)
+    #pt1 = np.zeros_like(t1)
+    #pt2 = np.zeros_like(t2)
 
     # Method 1
 
@@ -221,6 +218,13 @@ def get_t3p2_amplitude_contribution(eom, t1, t2, eris=None, inplace=False):
 
     #pt1 += t1
     #pt2 += t2
+
+    if inplace:
+        pt1 = t1
+        pt2 = t2
+    else:
+        pt1 = t1.copy()
+        pt2 = t2.copy()
 
     eijk = foo[:, None, None] + foo[None, :, None] + foo[None, None, :]
     eia = foo[:, None] - fvv[None, :]
