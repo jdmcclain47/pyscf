@@ -162,6 +162,13 @@ def get_t3p2_amplitude_contribution(eom, t1, t2, eris=None, inplace=False):
 
     ccsd_energy = gccsd.energy(None, t1, t2, eris)
 
+    if inplace:
+        pt1 = t1
+        pt2 = t2
+    else:
+        pt1 = t1.copy()
+        pt2 = t2.copy()
+
     # Method 1
 
     #def pi_jk(tmp):
@@ -215,18 +222,11 @@ def get_t3p2_amplitude_contribution(eom, t1, t2, eris=None, inplace=False):
     #pt1 += t1
     #pt2 += t2
 
-    from pyscf.lib.misc import tril_product
-    if inplace:
-        pt1 = t1
-        pt2 = t2
-    else:
-        pt1 = t1.copy()
-        pt2 = t2.copy()
-
     eijk = foo[:, None, None] + foo[None, :, None] + foo[None, None, :]
     eia = foo[:, None] - fvv[None, :]
     eijab = eia[:, None, :, None] + eia[None, :, None, :]
 
+    from pyscf.lib.misc import tril_product
     for a, b, c in tril_product(range(nvir), repeat=3):
         tmp_ijk  = lib.einsum('dk,ijd->ijk', vvvo[b, c], t2[:, :, a])
         tmp_ijk -= lib.einsum('mkj,im->ijk', vooo[c], t2[:, :, a, b])
