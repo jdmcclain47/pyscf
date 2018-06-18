@@ -465,7 +465,7 @@ def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs, eris=None):
             The return value. True for success, False otherwise.
 
     Notes:
-        The user should check to make sure the right and left eigenvalues
+        The user should check to make sure the right and left eigenvalues agree
         before running the perturbative correction.
 
         The 2hp left and right amplitudes are assumed to be of the form s^{a }_{ij},
