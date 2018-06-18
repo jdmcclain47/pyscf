@@ -290,7 +290,7 @@ def get_t3p2_amplitude_contribution(eom, t1, t2, eris=None, inplace=False):
             T1 amplitudes.
         t2 (:obj:`ndarray`):
             T2 amplitudes from which the T3[2] amplitudes are formed.
-        eris (:obj:`_PhysicistsERIs`):
+        eris (:obj:`_ChemistsERIs`):
             Antisymmetrized electron-repulsion integrals in physicist's notation.
         inplace (bool):
             Whether to change the t1, t2 inplace.  Will overwrite input.
