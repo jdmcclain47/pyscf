@@ -462,7 +462,7 @@ def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs, eris=None):
 
     Returns:
         e_star (list of float):
-            The return value. True for success, False otherwise.
+            The IP-CCSD* energy.
 
     Notes:
         The user should check to make sure the right and left eigenvalues agree
