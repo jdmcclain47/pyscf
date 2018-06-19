@@ -708,8 +708,6 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         kshift = self.kshift
         kconserv = self.khelper.kconserv
 
-        cput2 = time.clock(), time.time()
-
         Hr1 = -einsum('ki,i->k',imds.Loo[kshift],r1)
         for ki, kb in product(range(nkpts), repeat=2):
             kj = kconserv[kshift,ki,kb]
