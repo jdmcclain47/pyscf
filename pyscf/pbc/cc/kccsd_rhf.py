@@ -691,6 +691,7 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         return self.eip, evecs
 
     def lipccsd_matvec(self, vector):
+        from itertools import product
         assert(self.ip_partition is None)
         if not hasattr(self,'imds'):
             self.imds = _IMDS(self)
@@ -701,6 +702,8 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         r1,r2 = self.vector_to_amplitudes_ip(vector)
 
         t1,t2 = self.t1, self.t2
+        nocc = self.nocc
+        nvir = self.nmo - nocc
         nkpts = self.nkpts
         kshift = self.kshift
         kconserv = self.khelper.kconserv
@@ -710,7 +713,12 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         Hr1 = -einsum('ki,i->k',imds.Loo[kshift],r1)
         for ki, kb in product(range(nkpts), repeat=2):
             kj = kconserv[kshift,ki,kb]
-            Hr1 -= einsum('kbij,ijb->k',imds.Wovoo[kb,ki],r2[ki,kj])
+            Hr1 -= einsum('kbij,ijb->k',imds.Wovoo[kshift,kb,ki],r2[ki,kj])
+
+        r2t2_tmp = numpy.zeros((nvir),dtype=t1.dtype)
+        for ki, kj in product(range(nkpts), repeat=2):
+            kc = kshift
+            r2t2_tmp += einsum('ijcb,ijb->c',t2[ki, kj, kc],r2[ki, kj])
 
         Hr2 = numpy.zeros(r2.shape,dtype=t1.dtype)
         for kl, kk in product(range(nkpts), repeat=2):
@@ -719,70 +727,27 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
             Hr2[kk,kl] -= einsum('lj,kjd->kld',imds.Loo[kl],r2[kk,kl])
             Hr2[kk,kl] += einsum('bd,klb->kld',imds.Lvv[kd],r2[kk,kl])
 
-            Hr2[kk,kl] -= 2.*einsum('klid,i->kld',imds.Wooov[kk,kl],r1)
-            Hr2[kk,kl] += einsum('lkid,i->kld',imds.Wooov[kl,kk],r1)
+            Hr2[kk,kl] -= 2.*einsum('klid,i->kld',imds.Wooov[kk,kl,kshift],r1)
+            Hr2[kk,kl] += einsum('lkid,i->kld',imds.Wooov[kl,kk,kshift],r1)
 
             Hr2[kk,kshift] -= (kk==kd)*einsum('kd,l->kld',imds.Fov[kk],r1)
             Hr2[kshift,kl] += (kl==kd)*2.*einsum('ld,k->kld',imds.Fov[kl],r1)
 
+            SWoovv = 2. * imds.Woovv[kl, kk, kd] - imds.Woovv[kk, kl, kd].transpose(1, 0, 2, 3)
+            Hr2[kk, kl] -= einsum('kldc,c->kld',SWoovv,r2t2_tmp)
+
             for kj in range(nkpts):
-                kd = kconserv[kk, kshift, kl]
                 kb = kconserv[kd, kl, kj]
 
-                Hr2[kk,kl] += 2. * einsum('bljd,kjb->kld',imds.Wvoov[kb,kl,kj],r2[kk,kj])
-                Hr2[kk,kl] -= einsum('lbjd,kjb->kld',imds.Wovov[kl,kb,kj],r2[kk,kj]) # typo in nooijen's paper
+                SWovvo = 2. * imds.Wovvo[kl,kb,kd] - imds.Wovov[kl,kb,kj].transpose(0, 1, 3, 2)
+                Hr2[kk,kl] += einsum('lbdj,kjb->kld',SWovvo,r2[kk,kj])
 
                 kb = kconserv[kd, kk, kj]
+                Hr2[kk,kl] -= einsum('kbdj,ljb->kld',imds.Wovvo[kk,kb,kd],r2[kl,kj])
                 Hr2[kk,kl] -= einsum('kbjd,jlb->kld',imds.Wovov[kk,kb,kj],r2[kj,kl])
-                Hr2[kk,kl] -= einsum('bljd,kjb->kld',imds.Wvoov[kb,kl,kj],r2[kk,kj])
 
-
-        # BEGIN WORK HERE
-
-            for iterki, ki in enumerate(range(nkpts)):
-                kj = kconserv[kk,ki,kl]
-                Hr2[kk,kl] += einsum('klij,ijd->kld',Woooo_klX[iterkk,iterkl,ki],r2[ki,kj])
-            kd = kconserv[kk,kshift,kl]
-            tmp3 = einsum('kldc,c->kld',Woovv_klX[iterkk,iterkl,kd],tmp2[kshift])
-            Hr2[kk,kl] +=    tmp3
-            Hr2[kl,kk] -= 2.*tmp3.transpose(1,0,2) # Notice change of kl,kk in Hr2
-
-        #        + 2.*einsum('lbdj,kjb->kld',Wovvo,r2)
-        #        - einsum('lbjd,kjb->kld',Wovov,r2) #typo in nooijen's paper
-        #        - einsum('kbid,ilb->kld',Wovov,r2)
-        #        - einsum('kbdj,ljb->kld',Wovvo,r2)
-        #        + einsum('klij,ijd->kld',Woooo,r2)
-        #        + einsum('kldc,c->kld',Woovv,tmp)
-        #        - 2.*einsum('lkdc,c->kld',Woovv,tmp)
-
-        # TODO tmp2 only needs to create tmp2[kshift], but should wait for the fix in the mpi.stealing
-        # as defined for the analogous quantity in the ipccsd_matvec
-        tmp2 = numpy.zeros((nkpts,nvir),dtype=t1.dtype)
-        for kirange, kjrange in mpi.work_stealing_partition(task_list):
-            for iterki, ki in enumerate(range(*kirange)):
-                for iterkj, kj in enumerate(range(*kjrange)):
-                    for iterkc, kc in enumerate(range(nkpts)):
-                        t2_tmp = unpack_tril(t2,nkpts,ki,kj,kc,kconserv[ki,kc,kj])
-                        tmp2[kc] += einsum('ijcb,ijb->c',t2_tmp,r2[ki,kj])
-        comm.Allreduce(MPI.IN_PLACE, tmp2, op=MPI.SUM)
-
-        #tmp = einsum('ijcb,ijb->c',t2,r2)
-        #Hr2 = ( - einsum('kd,l->kld',Fov,r1)
-        #        + 2.*einsum('ld,k->kld',Fov,r1)
-        #        - 2.*einsum('klid,i->kld',Wooov,r1)
-        #        + einsum('lkid,i->kld',Wooov,r1)
-        #        - einsum('ki,ild->kld',Loo,r2)
-        #        - einsum('lj,kjd->kld',Loo,r2)
-        #        + einsum('bd,klb->kld',Lvv,r2)
-        #        + 2.*einsum('lbdj,kjb->kld',Wovvo,r2)
-        #        - einsum('kbdj,ljb->kld',Wovvo,r2)
-        #        - einsum('lbjd,kjb->kld',Wovov,r2) #typo in nooijen's paper
-        #        + einsum('klij,ijd->kld',Woooo,r2)
-        #        - einsum('kbid,ilb->kld',Wovov,r2)
-        #        + einsum('kldc,c->kld',Woovv,tmp)
-        #        - 2.*einsum('lkdc,c->kld',Woovv,tmp)
-        #        )
-        comm.Allreduce(MPI.IN_PLACE, Hr2, op=MPI.SUM)
+                ki = kconserv[kk,kj,kl]
+                Hr2[kk,kl] += einsum('klji,jid->kld',imds.Woooo[kk,kl,kj],r2[kj,ki])
 
         vector = self.amplitudes_to_vector_ip(Hr1,Hr2)
         return vector
@@ -942,6 +907,7 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
             Saeh, Stanton "...energy surfaces of radicals" JCP 111, 8275 (1999)
 
         """
+        from itertools import product
         time0 = time.clock(), time.time()
 
         assert(self.ip_partition == None)
@@ -1003,7 +969,7 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
             #l1 = l1.reshape(-1)
             #r1 = r1.reshape(-1)
 
-            for ki, kj, ka, kb in itertools.product(range(nkpts), repeat=4):
+            for ki, kj, ka, kb in product(range(nkpts), repeat=4):
                 #if ka > kb:
                 #    continue
                 kklist = tools.get_kconserv3(self._scf.cell, self.kpts,
