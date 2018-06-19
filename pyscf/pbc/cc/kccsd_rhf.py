@@ -692,11 +692,11 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
 
     def lipccsd_matvec(self, vector):
         from itertools import product
-        assert(self.ip_partition is None)
         if not hasattr(self,'imds'):
             self.imds = _IMDS(self)
+        partition = self.ip_partition
         if not self.imds.made_ip_imds:
-            self.imds.make_ip(self.ip_partition)
+            self.imds.make_ip(partition)
         imds = self.imds
 
         r1,r2 = self.vector_to_amplitudes_ip(vector)
@@ -715,39 +715,54 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
             kj = kconserv[kshift,ki,kb]
             Hr1 -= einsum('kbij,ijb->k',imds.Wovoo[kshift,kb,ki],r2[ki,kj])
 
-        r2t2_tmp = numpy.zeros((nvir),dtype=t1.dtype)
-        for ki, kj in product(range(nkpts), repeat=2):
-            kc = kshift
-            r2t2_tmp += einsum('ijcb,ijb->c',t2[ki, kj, kc],r2[ki, kj])
-
-        Hr2 = numpy.zeros(r2.shape,dtype=t1.dtype)
+        Hr2 = np.zeros(r2.shape, dtype=np.complex128)
         for kl, kk in product(range(nkpts), repeat=2):
             kd = kconserv[kk,kshift,kl]
-            Hr2[kk,kl] -= einsum('ki,ild->kld',imds.Loo[kk],r2[kk,kl])
-            Hr2[kk,kl] -= einsum('lj,kjd->kld',imds.Loo[kl],r2[kk,kl])
-            Hr2[kk,kl] += einsum('bd,klb->kld',imds.Lvv[kd],r2[kk,kl])
-
-            Hr2[kk,kl] -= 2.*einsum('klid,i->kld',imds.Wooov[kk,kl,kshift],r1)
-            Hr2[kk,kl] += einsum('lkid,i->kld',imds.Wooov[kl,kk,kshift],r1)
+            SWooov = (2. * imds.Wooov[kk,kl,kshift] -
+                           imds.Wooov[kl,kk,kshift].transpose(1, 0, 2, 3))
+            Hr2[kk,kl] -= einsum('klid,i->kld',SWooov,r1)
 
             Hr2[kk,kshift] -= (kk==kd)*einsum('kd,l->kld',imds.Fov[kk],r1)
             Hr2[kshift,kl] += (kl==kd)*2.*einsum('ld,k->kld',imds.Fov[kl],r1)
 
-            SWoovv = 2. * imds.Woovv[kl, kk, kd] - imds.Woovv[kk, kl, kd].transpose(1, 0, 2, 3)
-            Hr2[kk, kl] -= einsum('kldc,c->kld',SWoovv,r2t2_tmp)
+        if partition == 'mp':
+            fock = self.eris.fock
+            foo = fock[:,:nocc,:nocc]
+            fvv = fock[:,nocc:,nocc:]
+            for kl, kk in product(range(nkpts), repeat=2):
+                kd = kconserv[kk,kshift,kl]
+                Hr2[kk,kl] -= einsum('ki,ild->kld',foo[kk],r2[kk,kl])
+                Hr2[kk,kl] -= einsum('lj,kjd->kld',foo[kl],r2[kk,kl])
+                Hr2[kk,kl] += einsum('bd,klb->kld',fvv[kd],r2[kk,kl])
+        elif self.ip_partition == 'full':
+            Hr2 += self._ipccsd_diag_matrix2*r2
+        else:
+            r2t2_tmp = numpy.zeros((nvir),dtype=t1.dtype)
+            for ki, kj in product(range(nkpts), repeat=2):
+                kc = kshift
+                r2t2_tmp += einsum('ijcb,ijb->c',t2[ki, kj, kc],r2[ki, kj])
 
-            for kj in range(nkpts):
-                kb = kconserv[kd, kl, kj]
+            for kl, kk in product(range(nkpts), repeat=2):
+                kd = kconserv[kk,kshift,kl]
+                Hr2[kk,kl] -= einsum('ki,ild->kld',imds.Loo[kk],r2[kk,kl])
+                Hr2[kk,kl] -= einsum('lj,kjd->kld',imds.Loo[kl],r2[kk,kl])
+                Hr2[kk,kl] += einsum('bd,klb->kld',imds.Lvv[kd],r2[kk,kl])
 
-                SWovvo = 2. * imds.Wovvo[kl,kb,kd] - imds.Wovov[kl,kb,kj].transpose(0, 1, 3, 2)
-                Hr2[kk,kl] += einsum('lbdj,kjb->kld',SWovvo,r2[kk,kj])
+                SWoovv = 2. * imds.Woovv[kl, kk, kd] - imds.Woovv[kk, kl, kd].transpose(1, 0, 2, 3)
+                Hr2[kk, kl] -= einsum('kldc,c->kld',SWoovv,r2t2_tmp)
 
-                kb = kconserv[kd, kk, kj]
-                Hr2[kk,kl] -= einsum('kbdj,ljb->kld',imds.Wovvo[kk,kb,kd],r2[kl,kj])
-                Hr2[kk,kl] -= einsum('kbjd,jlb->kld',imds.Wovov[kk,kb,kj],r2[kj,kl])
+                for kj in range(nkpts):
+                    kb = kconserv[kd, kl, kj]
 
-                ki = kconserv[kk,kj,kl]
-                Hr2[kk,kl] += einsum('klji,jid->kld',imds.Woooo[kk,kl,kj],r2[kj,ki])
+                    SWovvo = 2. * imds.Wovvo[kl,kb,kd] - imds.Wovov[kl,kb,kj].transpose(0, 1, 3, 2)
+                    Hr2[kk,kl] += einsum('lbdj,kjb->kld',SWovvo,r2[kk,kj])
+
+                    kb = kconserv[kd, kk, kj]
+                    Hr2[kk,kl] -= einsum('kbdj,ljb->kld',imds.Wovvo[kk,kb,kd],r2[kl,kj])
+                    Hr2[kk,kl] -= einsum('kbjd,jlb->kld',imds.Wovov[kk,kb,kj],r2[kj,kl])
+
+                    ki = kconserv[kk,kj,kl]
+                    Hr2[kk,kl] += einsum('klji,jid->kld',imds.Woooo[kk,kl,kj],r2[kj,ki])
 
         vector = self.amplitudes_to_vector_ip(Hr1,Hr2)
         return vector
@@ -1585,6 +1600,9 @@ class _IMDS:
         if self._made_shared_2e is False and ip_partition != 'mp':
             self._make_shared_2e()
             self._made_shared_2e = True
+
+        if self._fimd is None:
+            self._fimd = lib.H5TmpFile()
 
         cput0 = (time.clock(), time.time())
         log = logger.Logger(self.stdout, self.verbose)
