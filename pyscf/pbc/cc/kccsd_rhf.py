@@ -754,7 +754,7 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
                     kb = kconserv[kd, kl, kj]
 
                     SWovvo = (2. * imds.Wovvo[kl,kb,kd] -
-                                   imds.Wovov[kl,kb,kj].transpose(0, 1, 3, 2)
+                                   imds.Wovov[kl,kb,kj].transpose(0, 1, 3, 2))
                     Hr2[kk,kl] += einsum('lbdj,kjb->kld',SWovvo,r2[kk,kj])
 
                     kb = kconserv[kd, kk, kj]
@@ -1157,6 +1157,168 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
 
         vector = self.amplitudes_to_vector_ea(Hr1,Hr2)
         vector = self.mask_frozen_ea(vector, const=0.0)
+        return vector
+
+    def leaccsd(self, nroots=1, koopmans=False, guess=None, partition=None,
+               kptlist=None):
+        '''Calculate (N+1)-electron charged excitations via EA-EOM-CCSD.
+
+        Notes:
+            Similar to ipccsd(), but used for left eigenvectors.
+
+        Kwargs:
+            See ipccd()
+        '''
+        cput0 = (time.clock(), time.time())
+        log = logger.Logger(self.stdout, self.verbose)
+        nocc = self.nocc
+        nvir = self.nmo - nocc
+        nkpts = self.nkpts
+        size =  nvir + nkpts*nkpts*nocc*nvir*nvir
+        nroots = min(nroots,size)
+        if partition:
+            partition = partition.lower()
+            assert partition in ['mp','full']
+        self.ea_partition = partition
+        if kptlist is None:
+            kptlist = range(nkpts)
+        evals = np.zeros((len(kptlist),nroots), np.float)
+        evecs = np.zeros((len(kptlist),nroots,size), np.complex128)
+
+        for k,kshift in enumerate(kptlist):
+            self.kshift = kshift
+            adiag = self.eaccsd_diag(kshift)
+            if partition == 'full':
+                self._eaccsd_diag_matrix2 = self.vector_to_amplitudes_ea(adiag)[1]
+
+            user_guess = False
+            if guess:
+                user_guess = True
+                assert len(guess) == nroots
+                for g in guess:
+                    assert g.size == size
+            else:
+                guess = []
+                if koopmans:
+                    for n in range(nroots):
+                        g = np.zeros(size)
+                        g[n] = 1.0
+                        guess.append(g)
+                else:
+                    idx = adiag.argsort()[:nroots]
+                    for i in idx:
+                        g = np.zeros(size)
+                        g[i] = 1.0
+                        guess.append(g)
+
+            def precond(r, e0, x0):
+                return r/(e0-adiag+1e-12)
+
+            eig = linalg_helper.eig
+            if user_guess or koopmans:
+                def pickeig(w, v, nr, envs):
+                    x0 = linalg_helper._gen_x0(envs['v'], envs['xs'])
+                    idx = np.argmax( np.abs(np.dot(np.array(guess).conj(),np.array(x0).T)), axis=1 )
+                    return w[idx].real, v[:,idx].real, idx
+                evals_k, evecs_k = eig(self.leaccsd_matvec, guess, precond, pick=pickeig,
+                                       tol=self.conv_tol, max_cycle=self.max_cycle,
+                                       max_space=self.max_space, nroots=nroots, verbose=self.verbose)
+            else:
+                evals_k, evecs_k = eig(self.leaccsd_matvec, guess, precond,
+                                       tol=self.conv_tol, max_cycle=self.max_cycle,
+                                       max_space=self.max_space, nroots=nroots, verbose=self.verbose)
+
+            evals_k = evals_k.real
+            evals[k] = evals_k
+            evecs[k] = evecs_k
+
+            if nroots == 1:
+                evals_k, evecs_k = [evals_k], [evecs_k]
+            nvir = self.nmo - self.nocc
+            for n, en, vn in zip(range(nroots), evals_k, evecs_k):
+                logger.info(self, 'EA root %d E = %.16g  qpwt = %0.6g',
+                            n, en, np.linalg.norm(vn[:nvir])**2)
+        log.timer('EA-CCSD', *cput0)
+        self.eea = evals
+        return self.eea, evecs
+
+    def leaccsd_matvec(self, vector):
+        from itertools import product
+        if not hasattr(self,'imds'):
+            self.imds = _IMDS(self)
+        partition = self.ea_partition
+        if not self.imds.made_ea_imds:
+            self.imds.make_ea(partition)
+        imds = self.imds
+
+        r1,r2 = self.vector_to_amplitudes_ea(vector)
+
+        t1,t2 = self.t1, self.t2
+        nocc = self.nocc
+        nvir = self.nmo - nocc
+        nkpts = self.nkpts
+        kshift = self.kshift
+        kconserv = self.khelper.kconserv
+
+        # 1p-1p block
+        Hr1 = np.einsum('ac,a->c', imds.Lvv[kshift], r1)
+        # 1p-2p1h block
+        for kj, ka in product(range(nkpts), repeat=2):
+            kb = kconserv[kj, ka, kshift]
+            Hr1 += np.einsum('abcj,jab->c', imds.Wvvvo[ka, kb, kshift], r2[kj, ka])
+
+        # 2p1h-1p block
+        Hr2 = np.zeros((nkpts, nkpts, nocc, nvir, nvir), dtype=np.complex128)
+        for kl, kc in product(range(nkpts), repeat=2):
+            kd = kconserv[kl, kc, kshift]
+            Hr2[kl, kc] += 2. * (kl==kd) * np.einsum('c,ld->lcd', r1, imds.Fov[kd])
+            Hr2[kl, kc] += - (kl==kc) * np.einsum('d,lc->lcd', r1, imds.Fov[kl])
+
+            SWvovv = (2. * imds.Wvovv[kshift, kl, kc] -
+                           imds.Wvovv[kshift, kl, kd].transpose(0, 1, 3, 2))
+            Hr2[kl, kc] += np.einsum('a,alcd->lcd', r1, SWvovv)
+
+        # 2p1h-2p1h block
+        if partition == 'mp':
+            fock = self.eris.fock
+            foo = fock[:,:nocc,:nocc]
+            fvv = fock[:,nocc:,nocc:]
+            for kl, kc in product(range(nkpts), repeat=2):
+                kd = kconserv[kl, kc, kshift]
+                Hr2[kl, kc] += lib.einsum('lad,ac->lcd', r2[kl, kc], fvv[kc])
+                Hr2[kl, kc] += lib.einsum('lcb,bd->lcd', r2[kl, kc], fvv[kd])
+                Hr2[kl, kc] += -lib.einsum('jcd,lj->lcd', r2[kl, kc], foo[kl])
+        elif self.ip_partition == 'full':
+            Hr2 += self._ipccsd_diag_matrix2*r2
+        else:
+            r2t2_tmp = numpy.zeros((nocc),dtype=t1.dtype)
+            for ki, kc in product(range(nkpts), repeat=2):
+                kb = kconserv[ki, kc, kshift]
+                r2t2_tmp += np.einsum('ijcb,ibc->j', imds.t2[ki, kshift, kc], r2[ki, kb])
+
+            for kl, kc in product(range(nkpts), repeat=2):
+                kd = kconserv[kl, kc, kshift]
+                Hr2[kl, kc] += lib.einsum('lad,ac->lcd', r2[kl, kc], imds.Lvv[kc])
+                Hr2[kl, kc] += lib.einsum('lcb,bd->lcd', r2[kl, kc], imds.Lvv[kd])
+                Hr2[kl, kc] += -lib.einsum('jcd,lj->lcd', r2[kl, kc], imds.Loo[kl])
+
+                SWoovv = (2. * imds.Woovv[kl, kshift, kd] -
+                               imds.Woovv[kl, kshift, kc].transpose(0, 1, 3, 2))
+                Hr2 += -np.einsum('ljdc,j->lcd', SWoovv, r2t2_tmp)
+
+                for kb in range(nkpts):
+                    kj = kconserv[kl, kd, kb]
+                    SWovvo = (2. * imds.Wovvo[kl, kb, kd] -
+                                   imds.Wovov[kl, kb, kj].transpose(0, 1, 3, 2))
+                    Hr2[kl, kc] += lib.einsum('jcb,lbdj->lcd', r2[kj, kc], SWovvo)
+                    kj = kconserv[kl, kc, kb]
+                    Hr2[kl, kc] += -lib.einsum('lbjc,jbd->lcd', imds.Wovov[kl, kb, kj], r2[kj, kb])
+                    Hr2[kl, kc] += -lib.einsum('lbcj,jdb->lcd', imds.Wovvo[kl, kb, kc], r2[kj, kd])
+
+                    ka = kconserv[kc, kb, kd]
+                    Hr2[kl, kc] += lib.einsum('lab,abcd->lcd', r2[kl, ka], imds.Wvvvv[ka, kb, kc])
+
+        vector = self.amplitudes_to_vector_ea(Hr1,Hr2)
         return vector
 
     def eaccsd_diag(self, kshift=0):
@@ -1628,6 +1790,9 @@ class _IMDS:
         if self._made_shared_2e is False and ea_partition != 'mp':
             self._make_shared_2e()
             self._made_shared_2e = True
+
+        if self._fimd is None:
+            self._fimd = lib.H5TmpFile()
 
         cput0 = (time.clock(), time.time())
         log = logger.Logger(self.stdout, self.verbose)
