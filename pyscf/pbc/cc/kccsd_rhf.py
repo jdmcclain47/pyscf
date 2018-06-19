@@ -748,13 +748,15 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
                 Hr2[kk,kl] -= einsum('lj,kjd->kld',imds.Loo[kl],r2[kk,kl])
                 Hr2[kk,kl] += einsum('bd,klb->kld',imds.Lvv[kd],r2[kk,kl])
 
-                SWoovv = 2. * imds.Woovv[kl, kk, kd] - imds.Woovv[kk, kl, kd].transpose(1, 0, 2, 3)
+                SWoovv = (2. * imds.Woovv[kl, kk, kd] -
+                               imds.Woovv[kk, kl, kd].transpose(1, 0, 2, 3))
                 Hr2[kk, kl] -= einsum('kldc,c->kld',SWoovv,r2t2_tmp)
 
                 for kj in range(nkpts):
                     kb = kconserv[kd, kl, kj]
 
-                    SWovvo = 2. * imds.Wovvo[kl,kb,kd] - imds.Wovov[kl,kb,kj].transpose(0, 1, 3, 2)
+                    SWovvo = (2. * imds.Wovvo[kl,kb,kd] -
+                                   imds.Wovov[kl,kb,kj].transpose(0, 1, 3, 2)
                     Hr2[kk,kl] += einsum('lbdj,kjb->kld',SWovvo,r2[kk,kj])
 
                     kb = kconserv[kd, kk, kj]
