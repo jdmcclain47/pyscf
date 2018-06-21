@@ -64,6 +64,76 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(escf,hf_311, 9)
         self.assertAlmostEqual(ecc, cc_311, 6)
 
+    def test_ipccsd_311_n1_high_cost(self):
+        L = 7.0
+        n = 9
+        cell = make_test_cell.test_cell_n1(L,[n]*3)
+        nk = (3, 1, 1)
+
+        abs_kpts = cell.make_kpts(nk, wrap_around=True)
+        kmf = pbcscf.KRHF(cell, abs_kpts, exxdiv=None)
+        kmf.conv_tol = 1e-14
+        escf = kmf.scf()
+
+        cc = pyscf.pbc.cc.kccsd_rhf.RCCSD(kmf)
+        cc.conv_tol=1e-14
+        cc.verbose = 7
+        ecc, t1, t2 = cc.kernel()
+
+        hf_311 = -0.92687629918229486
+        cc_311 = -0.042702177586414237
+        self.assertAlmostEqual(escf,hf_311, 9)
+        self.assertAlmostEqual(ecc, cc_311, 6)
+
+        ew, ev = cc.ipccsd(nroots=1, kptlist=[0], partition='mp')
+        self.assertAlmostEqual(ew[0], 0.1961932627711932, 6)
+        lew, lev = cc.lipccsd(nroots=3, kptlist=[0], partition='mp')
+        self.assertAlmostEqual(lew[0], 0.1961932627711932, 6)
+
+        ew, ev = cc.lipccsd(nroots=3, kptlist=[0])
+        self.assertAlmostEqual(ew[0], 0.1858896225849556, 6)
+        self.assertAlmostEqual(ew[1], 0.3079196211332019, 6)
+        self.assertAlmostEqual(ew[2], 0.3206246035042978, 6)
+        lew, lev = cc.lipccsd(nroots=3, kptlist=[0])
+        self.assertAlmostEqual(lew[0], 0.1858896225849556, 6)
+        self.assertAlmostEqual(lew[1], 0.3079196211332019, 6)
+        self.assertAlmostEqual(lew[2], 0.3206246035042978, 6)
+
+    def test_eaccsd_311_n1_high_cost(self):
+        L = 7.0
+        n = 9
+        cell = make_test_cell.test_cell_n1(L,[n]*3)
+        nk = (3, 1, 1)
+
+        abs_kpts = cell.make_kpts(nk, wrap_around=True)
+        kmf = pbcscf.KRHF(cell, abs_kpts, exxdiv=None)
+        kmf.conv_tol = 1e-14
+        escf = kmf.scf()
+
+        cc = pyscf.pbc.cc.kccsd_rhf.RCCSD(kmf)
+        cc.conv_tol=1e-14
+        cc.verbose = 7
+        ecc, t1, t2 = cc.kernel()
+
+        hf_311 = -0.92687629918229486
+        cc_311 = -0.042702177586414237
+        self.assertAlmostEqual(escf,hf_311, 9)
+        self.assertAlmostEqual(ecc, cc_311, 6)
+
+        ew, ev = cc.eaccsd(nroots=1, kptlist=[0], partition='mp')
+        self.assertAlmostEqual(ew[0], 0.2824268531553734, 6)
+        lew, lev = cc.leaccsd(nroots=1, kptlist=[0], partition='mp')
+        self.assertAlmostEqual(lew[0], 0.2824268531553734, 6)
+
+        ew, ev = cc.leaccsd(nroots=3, kptlist=[0])
+        self.assertAlmostEqual(ew[0], 0.2637778931683522, 6)
+        self.assertAlmostEqual(ew[1], 0.2891321218458044, 6)
+        self.assertAlmostEqual(ew[2], 0.2891321218458051, 6)
+        lew, lev = cc.leaccsd(nroots=3, kptlist=[0])
+        self.assertAlmostEqual(lew[0], 0.2637778931683522, 6)
+        self.assertAlmostEqual(lew[1], 0.2891321218458044, 6)
+        self.assertAlmostEqual(lew[2], 0.2891321218458051, 6)
+
     def test_single_kpt(self):
         cell = pbcgto.Cell()
         cell.atom = '''
