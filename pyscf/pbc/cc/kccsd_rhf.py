@@ -543,8 +543,11 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         # Ref: Nooijen and Snijders, J. Chem. Phys. 102, 1681 (1995) Eqs.(8)-(9)
         if not hasattr(self,'imds'):
             self.imds = _IMDS(self)
+        partition = self.ip_partition
+        if self.imds.ip_partition != partition:
+            self.imds = _IMDS(self)
         if not self.imds.made_ip_imds:
-            self.imds.make_ip(self.ip_partition)
+            self.imds.make_ip(partition)
         imds = self.imds
 
         vector = self.mask_frozen_ip(vector, const=0.0)
@@ -699,6 +702,8 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         if not hasattr(self,'imds'):
             self.imds = _IMDS(self)
         partition = self.ip_partition
+        if self.imds.ip_partition != partition:
+            self.imds = _IMDS(self)
         if not self.imds.made_ip_imds:
             self.imds.make_ip(partition)
         imds = self.imds
@@ -774,8 +779,11 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
     def ipccsd_diag(self, kshift=0):
         if not hasattr(self,'imds'):
             self.imds = _IMDS(self)
+        partition = self.ip_partition
+        if self.imds.ip_partition != partition:
+            self.imds = _IMDS(self)
         if not self.imds.made_ip_imds:
-            self.imds.make_ip(self.ip_partition)
+            self.imds.make_ip(partition)
         imds = self.imds
 
         t1,t2 = self.t1, self.t2
@@ -1090,8 +1098,11 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         # Ref: Nooijen and Bartlett, J. Chem. Phys. 102, 3629 (1994) Eqs.(30)-(31)
         if not hasattr(self,'imds'):
             self.imds = _IMDS(self)
+        partition = self.ea_partition
+        if self.imds.ea_partition != partition:
+            self.imds = _IMDS(self)
         if not self.imds.made_ea_imds:
-            self.imds.make_ea(self.ea_partition)
+            self.imds.make_ea(partition)
         imds = self.imds
 
         vector = self.mask_frozen_ea(vector, const=0.0)
@@ -1255,6 +1266,8 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         if not hasattr(self,'imds'):
             self.imds = _IMDS(self)
         partition = self.ea_partition
+        if self.imds.ea_partition != partition:
+            self.imds = _IMDS(self)
         if not self.imds.made_ea_imds:
             self.imds.make_ea(partition)
         imds = self.imds
@@ -1332,8 +1345,11 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
     def eaccsd_diag(self, kshift=0):
         if not hasattr(self,'imds'):
             self.imds = _IMDS(self)
+        partition = self.ea_partition
+        if self.imds.ea_partition != partition:
+            self.imds = _IMDS(self)
         if not self.imds.made_ea_imds:
-            self.imds.make_ea(self.ea_partition)
+            self.imds.make_ea(partition)
         imds = self.imds
 
         t1,t2 = self.t1, self.t2
@@ -1731,6 +1747,8 @@ class _IMDS:
         self.made_ea_imds = False
         self._made_shared_2e = False
         self._fimd = None
+        self.ip_partition = None
+        self.ea_partition = None
 
     def _make_shared_1e(self):
         cput0 = (time.clock(), time.time())
@@ -1766,6 +1784,7 @@ class _IMDS:
         log.timer('EOM-CCSD shared two-electron intermediates', *cput0)
 
     def make_ip(self, ip_partition=None):
+        self.ip_partition = ip_partition
         self._make_shared_1e()
         if self._made_shared_2e is False and ip_partition != 'mp':
             self._make_shared_2e()
@@ -1794,6 +1813,7 @@ class _IMDS:
         log.timer('EOM-CCSD IP intermediates', *cput0)
 
     def make_ea(self, ea_partition=None):
+        self.ea_partition = ip_partition
         self._make_shared_1e()
         if self._made_shared_2e is False and ea_partition != 'mp':
             self._make_shared_2e()
