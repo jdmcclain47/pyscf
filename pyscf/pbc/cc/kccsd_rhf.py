@@ -533,6 +533,8 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
             for n, en, vn in zip(range(nroots), evals_k, evecs_k):
                 logger.info(self, 'IP root %d E = %.16g  qpwt = %0.6g',
                             n, en, np.linalg.norm(vn[:self.nocc])**2)
+        if len(kptlist) == 1:
+            evals, evecs = evals[0], evecs[0]
         log.timer('IP-CCSD', *cput0)
         self.eip = evals
         return self.eip, evecs
@@ -686,6 +688,8 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
             for n, en, vn in zip(range(nroots), evals_k, evecs_k):
                 logger.info(self, 'IP root %d E = %.16g  qpwt = %0.6g',
                             n, en, np.linalg.norm(vn[:self.nocc])**2)
+        if len(kptlist) == 1:
+            evals, evecs = evals[0], evecs[0]
         log.timer('IP-CCSD', *cput0)
         self.eip = evals
         return self.eip, evecs
@@ -1076,6 +1080,8 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
             for n, en, vn in zip(range(nroots), evals_k, evecs_k):
                 logger.info(self, 'EA root %d E = %.16g  qpwt = %0.6g',
                             n, en, np.linalg.norm(vn[:nvir])**2)
+        if len(kptlist) == 1:
+            evals, evecs = evals[0], evecs[0]
         log.timer('EA-CCSD', *cput0)
         self.eea = evals
         return self.eea, evecs
@@ -1238,6 +1244,8 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
             for n, en, vn in zip(range(nroots), evals_k, evecs_k):
                 logger.info(self, 'EA root %d E = %.16g  qpwt = %0.6g',
                             n, en, np.linalg.norm(vn[:nvir])**2)
+        if len(kptlist) == 1:
+            evals, evecs = evals[0], evecs[0]
         log.timer('EA-CCSD', *cput0)
         self.eea = evals
         return self.eea, evecs
