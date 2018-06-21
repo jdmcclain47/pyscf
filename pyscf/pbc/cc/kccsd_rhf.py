@@ -1813,7 +1813,7 @@ class _IMDS:
         log.timer('EOM-CCSD IP intermediates', *cput0)
 
     def make_ea(self, ea_partition=None):
-        self.ea_partition = ip_partition
+        self.ea_partition = ea_partition
         self._make_shared_1e()
         if self._made_shared_2e is False and ea_partition != 'mp':
             self._make_shared_2e()
