@@ -468,8 +468,9 @@ def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs, eris=None):
         The user should check to make sure the right and left eigenvalues agree
         before running the perturbative correction.
 
-        The 2hp left and right amplitudes are assumed to be of the form s^{a }_{ij},
-        i.e. the (ia) indices are coupled.
+        The 2hp right amplitudes are assumed to be of the form s^{a }_{ij}, i.e.
+        the (ia) indices are coupled while the left are assumed to be of the form
+        s^{ b}_{ij}, i.e. the (jb) indices are coupled.
 
     Reference:
         Saeh, Stanton "...energy surfaces of radicals" JCP 111, 8275 (1999)
