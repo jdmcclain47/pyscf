@@ -37,6 +37,17 @@ mol.build()
 mf = scf.RHF(mol).run()
 mycc = rccsd.RCCSD(mf).run()
 
+mol_small = gto.Mole()
+mol_small.atom = [
+[8 , (0. , 0.     , 0.)],
+[1 , (0. , -0.757 , 0.587)],
+[1 , (0. , 0.757  , 0.587)]]
+mol_small.basis = '6-31g'
+mol_small.verbose = 7
+mol_small.build()
+mf_small = scf.RHF(mol_small).run()
+mycc_small = cc.RCCSD(mf_small).run()
+
 def make_mycc1():
     mf1 = copy.copy(mf)
     no = mol.nelectron // 2
@@ -94,8 +105,8 @@ eris31 = mycc31.ao2mo()
 
 
 def tearDownModule():
-    global mol, mf, mycc, mf1, eris1, mycc1, mycci, erisi, mycc2, mycc21, eris21, mycc3, mycc31, eris31
-    del mol, mf, mycc, mf1, eris1, mycc1, mycci, erisi, mycc2, mycc21, eris21, mycc3, mycc31, eris31
+    global mol, mf, mycc, mf1, eris1, mycc1, mycci, erisi, mycc2, mycc21, eris21, mycc3, mycc31, eris31, mol_small, mf_small, mycc_small
+    del mol, mf, mycc, mf1, eris1, mycc1, mycci, erisi, mycc2, mycc21, eris21, mycc3, mycc31, eris31, mol_small, mf_small, mycc_small
 
 class KnownValues(unittest.TestCase):
     def test_ipccsd(self):
@@ -115,6 +126,34 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(e[0], 0.43793202122290747, 6)
         self.assertAlmostEqual(e[1], 0.52287073076243218, 6)
         self.assertAlmostEqual(e[2], 0.67994597799835099, 6)
+
+    def test_ipccsd_small(self):
+        '''Useful for testing versus eom-gccsd'''
+        eom = mycc_small.eomip_method()
+        e,v = eom.kernel(nroots=1, left=False, koopmans=False)
+        self.assertAlmostEqual(e, 0.42789089871467728, 6)
+
+        myeom = eom_rccsd.EOMIP(mycc_small)
+        e, v = myeom.ipccsd(nroots=3)
+        self.assertAlmostEqual(e[0], 0.4278908987146773, 5)
+        self.assertAlmostEqual(e[1], 0.5022687313693275, 5)
+        self.assertAlmostEqual(e[2], 0.6855063997702956, 5)
+
+        le, lv = myeom.ipccsd(nroots=3, left=True)
+        self.assertAlmostEqual(le[0], 0.4278908987146773, 5)
+        self.assertAlmostEqual(le[1], 0.5022687313693275, 5)
+        self.assertAlmostEqual(le[2], 0.6855063997702956, 5)
+
+        e_star = myeom.ipccsd_star(e, v, lv)
+        self.assertAlmostEqual(e_star[0], 0.43586159198393476, 5)
+
+        delta_ccsd, pt1, pt2 = eom_rccsd.get_t3p2_amplitude_contribution(mycc_small, mycc_small.t1, mycc_small.t2, eris=mycc_small.ao2mo())
+        mycc_small.t1 = pt1
+        mycc_small.t2 = pt2
+
+        myeom = eom_rccsd.EOMIP(mycc_small)
+        e, v = myeom.ipccsd(nroots=1)
+        self.assertAlmostEqual(e, 0.4278564371694436, 5)
 
     def test_ipccsd_koopmans(self):
         e,v = mycc.ipccsd(nroots=3, koopmans=True)

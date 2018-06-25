@@ -31,8 +31,7 @@ mol.atom = [
 [1 , (0. , -0.757 , 0.587)],
 [1 , (0. , 0.757  , 0.587)]]
 mol.basis = '6-31g'
-#mol.verbose = 7
-mol.output = '/dev/null'
+mol.verbose = 7
 mol.build()
 mf = scf.RHF(mol).run()
 mycc = cc.GCCSD(mf).run()
@@ -118,26 +117,12 @@ class KnownValues(unittest.TestCase):
         e_star = myeom.ipccsd_star(e, v, lv, type1=True, type2=True)
         self.assertAlmostEqual(e_star[0], 0.43519790161865612, 5)
 
-        star_contributions = myeom.ipccsd_star_skeletons(e, v, lv)
-        star_idx = numpy.array([[1, 1, 0, 0, 0, 0],
-                                [1, 1, 0, 0, 0, 0]])
-        star_idx_w1 = numpy.array([[1, 1, 1, 1, 0, 0],
-                                   [1, 1, 1, 1, 0, 0]])
-        star_idx_w12 = numpy.array([[1, 1, 1, 1, 1, 1],
-                                    [1, 1, 1, 1, 1, 1]])
+        delta_ccsd, pt1, pt2 = eom_gccsd.get_t3p2_amplitude_contribution(mycc, mycc.t1, mycc.t2, eris=mycc.ao2mo())
+        myeom = eom_gccsd.EOMIP(mycc)
 
-        ipccsd_eval = 0.42789089871467728
-        deltaE = 0.43586159198393476 - ipccsd_eval
-        self.assertAlmostEqual(numpy.dot(star_contributions[0].flatten(),
-                               star_idx.flatten()), deltaE, 5)
-
-        deltaE = 0.43696348534760743 - ipccsd_eval
-        self.assertAlmostEqual(numpy.dot(star_contributions[0].flatten(),
-                               star_idx_w1.flatten()), deltaE, 5)
-
-        deltaE = 0.43519790161865612 - ipccsd_eval
-        self.assertAlmostEqual(numpy.dot(star_contributions[0].flatten(),
-                               star_idx_w12.flatten()), deltaE, 5)
+        imds = myeom.make_imds(t1=pt1, t2=pt2)
+        newe, newv = myeom.ipccsd(nroots=1, imds=imds)
+        self.assertAlmostEqual(newe, 0.42785643693567321, 7)
 
     def test_ipccsd_koopmans(self):
         e,v = mycc.ipccsd(nroots=3, koopmans=True)
@@ -275,6 +260,7 @@ if __name__ == "__main__":
     print("Tests for EOM GCCSD")
     k = KnownValues()
     k.test_ipccsd()
+    #k.test_ipccsd2()
     #k.test_eaccsd()
     unittest.main()
 
