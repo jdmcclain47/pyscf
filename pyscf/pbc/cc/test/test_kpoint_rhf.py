@@ -90,14 +90,17 @@ class KnownValues(unittest.TestCase):
         lew, lev = cc.lipccsd(nroots=3, kptlist=[0], partition='mp')
         self.assertAlmostEqual(lew[0], 0.1961932627711932, 6)
 
-        ew, ev = cc.lipccsd(nroots=3, kptlist=[0])
-        self.assertAlmostEqual(ew[0], 0.1858896225849556, 6)
-        self.assertAlmostEqual(ew[1], 0.3079196211332019, 6)
-        self.assertAlmostEqual(ew[2], 0.3206246035042978, 6)
-        lew, lev = cc.lipccsd(nroots=3, kptlist=[0])
-        self.assertAlmostEqual(lew[0], 0.1858896225849556, 6)
-        self.assertAlmostEqual(lew[1], 0.3079196211332019, 6)
-        self.assertAlmostEqual(lew[2], 0.3206246035042978, 6)
+        ew, ev = cc.ipccsd(nroots=3, kptlist=[0, 1])
+        self.assertAlmostEqual(ew[0][0], 0.1858896225849556, 6)
+        self.assertAlmostEqual(ew[0][1], 0.3079196211332019, 6)
+        self.assertAlmostEqual(ew[0][2], 0.3206246035042978, 6)
+        lew, lev = cc.lipccsd(nroots=3, kptlist=[0, 1])
+        self.assertAlmostEqual(lew[0][0], 0.1858896225849556, 6)
+        self.assertAlmostEqual(lew[0][1], 0.3079196211332019, 6)
+        self.assertAlmostEqual(lew[0][2], 0.3206246035042978, 6)
+
+        ew_star = cc.ipccsd_star(ew, ev, lev, kptlist=[0, 1])
+        self.assertAlmostEqual(ew_star[0][0], 0.18211313999415324, 6)
 
     def test_eaccsd_311_n1_high_cost(self):
         L = 7.0
@@ -125,7 +128,7 @@ class KnownValues(unittest.TestCase):
         lew, lev = cc.leaccsd(nroots=1, kptlist=[0], partition='mp')
         self.assertAlmostEqual(lew[0], 0.2824268531553734, 6)
 
-        ew, ev = cc.leaccsd(nroots=3, kptlist=[0])
+        ew, ev = cc.eaccsd(nroots=3, kptlist=[0])
         self.assertAlmostEqual(ew[0], 0.2637778931683522, 6)
         self.assertAlmostEqual(ew[1], 0.2891321218458044, 6)
         self.assertAlmostEqual(ew[2], 0.2891321218458051, 6)
@@ -213,7 +216,7 @@ class KnownValues(unittest.TestCase):
     def _test_cu_metallic_frozen_vir(self, kmf, cell, nk=[1,1,1]):
         assert cell.mesh == [7, 7, 7]
         ecc3_bench = -0.76794053711557086
-        max_cycle = 5
+        max_cycle = 200
 
         # The following calculation at full convergence gives -0.58688462599474
         # for a cell.mesh = [25, 25, 25].  It is equivalent to a supercell [1, 1, 2]
