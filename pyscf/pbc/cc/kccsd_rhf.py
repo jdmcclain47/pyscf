@@ -29,6 +29,8 @@ from pyscf.lib import logger
 import pyscf.cc
 import pyscf.cc.ccsd
 from pyscf.pbc import scf
+from pyscf.cc import gccsd
+from pyscf.pbc import tools
 from pyscf.pbc.mp.kmp2 import get_frozen_mask, get_nocc, get_nmo
 from pyscf.pbc.cc import kintermediates_rhf as imdk
 from pyscf.lib.parameters import LOOSE_ZERO_TOL, LARGE_DENOM
@@ -469,6 +471,7 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
             self.kshift = kshift
             nfrozen = np.sum(self.mask_frozen_ip(np.zeros(size, dtype=int), const=1))
             nroots = min(nroots, size - nfrozen)
+
         if partition:
             partition = partition.lower()
             assert partition in ['mp','full']
@@ -515,12 +518,15 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
                 def pickeig(w, v, nr, envs):
                     x0 = linalg_helper._gen_x0(envs['v'], envs['xs'])
                     idx = np.argmax( np.abs(np.dot(np.array(guess).conj(),np.array(x0).T)), axis=1 )
-                    return w[idx].real, v[:,idx].real, idx
+                    return w[idx].real, v[:,idx], idx
                 evals_k, evecs_k = eig(self.ipccsd_matvec, guess, precond, pick=pickeig,
                                        tol=self.conv_tol, max_cycle=self.max_cycle,
                                        max_space=self.max_space, nroots=nroots, verbose=self.verbose)
             else:
-                evals_k, evecs_k = eig(self.ipccsd_matvec, guess, precond,
+                def pickeig(w, v, nr, envs):
+                    idx = np.argsort(w.real)
+                    return w[idx].real, v[:,idx].real, idx
+                evals_k, evecs_k = eig(self.ipccsd_matvec, guess, precond, pick=pickeig,
                                        tol=self.conv_tol, max_cycle=self.max_cycle,
                                        max_space=self.max_space, nroots=nroots, verbose=self.verbose)
 
@@ -642,6 +648,7 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         for k,kshift in enumerate(kptlist):
             self.kshift = kshift
             adiag = self.ipccsd_diag(kshift)
+            adiag = self.mask_frozen_ip(adiag, const=LARGE_DENOM)
             if partition == 'full':
                 self._ipccsd_diag_matrix2 = self.vector_to_amplitudes_ip(adiag)[1]
 
@@ -775,6 +782,36 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
 
         vector = self.amplitudes_to_vector_ip(Hr1,Hr2)
         return vector
+
+    def mask_frozen_ip(self, vector, const=LARGE_DENOM):
+        '''Replaces all frozen orbital indices of `vector` with the value `const`.'''
+        r1, r2 = self.vector_to_amplitudes_ip(vector)
+        nkpts, nocc, nvir = self.t1.shape
+        kconserv = self.khelper.kconserv
+        kshift = self.kshift
+
+        fock = self.eris.fock
+        foo = fock[:,:nocc,:nocc]
+        fvv = fock[:,nocc:,nocc:]
+        d0 = np.array(const, dtype=r2.dtype)
+
+        r1_mask_idx = abs(foo[kshift].diagonal()) < LOOSE_ZERO_TOL
+        r1[r1_mask_idx] = d0
+        for ki in range(nkpts):
+            imask_idx = abs(foo[ki].diagonal()) < LOOSE_ZERO_TOL
+            for kj in range(nkpts):
+                kb = kconserv[ki,kshift,kj]
+                jmask_idx = abs(foo[kj].diagonal()) < LOOSE_ZERO_TOL
+                bmask_idx = abs(fvv[kb].diagonal()) < LOOSE_ZERO_TOL
+
+                d0 = const * np.array(1.0, dtype=r2.dtype)
+                r2[ki, kj, imask_idx] = d0
+                r2[ki, kj, :, jmask_idx] = d0
+                r2[ki, kj, :, :, bmask_idx] = d0
+
+        vector = self.amplitudes_to_vector_ip(r1, r2)
+        return vector
+
 
     def ipccsd_diag(self, kshift=0):
         if not hasattr(self,'imds'):
@@ -939,14 +976,14 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
 
         assert(self.ip_partition == None)
         eris = self.eris
-        assert(isinstance(eris, ccsd._PhysicistsERIs))
+        #assert(isinstance(eris, gccsd._PhysicistsERIs))
         nocc = self.nocc
         nvir = self.nmo - nocc
         nkpts = self.nkpts
         size = nocc + nkpts*nkpts*nocc*nocc*nvir
-        kconserv = self.kconserv
+        kconserv = self.khelper.kconserv
 
-        assert(ipccsd_evecs.shape[1] == size)
+        assert(ipccsd_evecs.shape[-1] == size)
         assert(ipccsd_evecs.shape == lipccsd_evecs.shape)
         if ((ipccsd_evecs.shape[0] == 1 and not hasattr(self, 'kshift')) or
             (ipccsd_evecs.shape[0] > 1 and kptlist is None)):
@@ -954,55 +991,241 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
                                'Please set `kshift` or provide `kptlist`.\nipccsd vec shape = %s'
                                % ipccsd_evecs.shape)
 
-        if kptlist is not None:
+        if kptlist is not None: # Assuming multiple kpoints isn't handled yet
             raise NotImplementedError
 
         kshift = self.kshift
         t1, t2 = self.t1, self.t2
-        foo = eris.fock[:,:nocc,:nocc]
-        fvv = eris.fock[:,nocc:,nocc:]
+        foo = [eris.fock[ikpt,:nocc,:nocc].diagonal() for ikpt in range(nkpts)]
+        fvv = [eris.fock[ikpt,nocc:,nocc:].diagonal() for ikpt in range(nkpts)]
 
         ipccsd_evecs  = np.array(ipccsd_evecs)
         lipccsd_evecs = np.array(lipccsd_evecs)
         e_star = []
         for ip_eval, ip_evec, ip_levec in zip(ipccsd_evals, ipccsd_evecs, lipccsd_evecs):
             # Enforcing <L|R> = 1
-            l1, l2 = vector_to_amplitudes_ip(ip_levec, nmo, nocc)
-            r1, r2 = vector_to_amplitudes_ip(ip_evec, nmo, nocc)
+            l1, l2 = self.vector_to_amplitudes_ip(ip_levec)
+            r1, r2 = self.vector_to_amplitudes_ip(ip_evec)
             ldotr = np.dot(l1, r1) + np.dot(l2.ravel(), r2.ravel())
 
-            logger.info(eom, 'Left-right amplitude overlap : %14.8e', ldotr)
+            logger.info(self, 'Left-right amplitude overlap : %14.8e', ldotr)
             if abs(ldotr) < 1e-7:
-                logger.warn(eom, 'Small %s left-right amplitude overlap. Results '
+                logger.warn(self, 'Small %s left-right amplitude overlap. Results '
                                  'may be inaccurate.', ldotr)
 
             l1 /= ldotr
             l2 /= ldotr
 
-            # Transposing L^{a }_{ij} operator
-            l2_t = numpy.zeros_like(l2)
-            for ki in range(nkpts):
-                for kj in range(nkpts):
-                    ka = kconserv[ki,kshift,kj]
-                    l2_t[ki, kj] = l2[kj, ki].transpose(1, 0, 2)
-
             ldotr = numpy.dot(l1.ravel(),r1.ravel()) + numpy.dot(l2.ravel(),r2.ravel())
-            l2 = (l2 + 2.*l2_t)/3.
-            l2_t = None
+            original_l2 = l2.copy()
 
             l1 /= ldotr
             l2 /= ldotr
 
-            #l1 = l1.reshape(-1)
-            #r1 = r1.reshape(-1)
-
+            deltaE = 0.0 + 0.0*1j
             for ki, kj, ka, kb in product(range(nkpts), repeat=4):
+                fac = 1.
                 #if ka > kb:
                 #    continue
-                kklist = tools.get_kconserv3(self._scf.cell, self.kpts,
-                                             [ka, kb ,kshift, ki, kj])
-                lijkab_tmp = numpy.empty((nocc,nocc,nocc,nvir,nvir), dtype=t2.dtype)
-                rijkab_tmp = numpy.empty((nocc,nocc,nocc,nvir,nvir), dtype=t2.dtype)
+                kk = tools.get_kconserv3(self._scf.cell, self.kpts,
+                                         [ka, kb ,kshift, ki, kj])
+                lijkab_tmp = numpy.zeros((nocc,nocc,nocc,nvir,nvir), dtype=t2.dtype)
+                rijkab_tmp = numpy.zeros((nocc,nocc,nocc,nvir,nvir), dtype=t2.dtype)
+
+                # (i,j,k) -> (i,j,k)
+                if kk == kshift and kb == kconserv[ki,ka,kj]:
+                    tmp = 0.5*einsum('ijab,k->ijkab',eris.oovv[ki,kj,ka],l1)
+                    lijkab_tmp += 8.* tmp
+
+                # (j,i,k) -> (i,j,k)
+                if kk == kshift and kb == kconserv[ki,ka,kj]:
+                    tmp = 0.5*einsum('jiab,k->ijkab',eris.oovv[kj,ki,ka],l1)
+                    lijkab_tmp -= 4.* tmp
+
+                # (k,j,i) -> (i,j,k)
+                if ki == kshift and kb == kconserv[kj,ka,kk]:
+                    tmp = 0.5*einsum('kjab,i->ijkab',eris.oovv[kk,kj,ka],l1)
+                    lijkab_tmp -= 4.* tmp
+
+                # (i,k,j) -> (i,j,k)
+                if kj == kshift and kb == kconserv[ki,ka,kk]:
+                    tmp = 0.5*einsum('ikab,j->ijkab',eris.oovv[ki,kk,ka],l1)
+                    lijkab_tmp -= 4.* tmp
+
+                # (j,k,i) -> (i,j,k)
+                if kj == kshift and kb == kconserv[ki,ka,kk]:
+                    tmp = 0.5*einsum('kiab,j->ijkab',eris.oovv[kk,ki,ka],l1)
+                    lijkab_tmp += 2.* tmp
+
+                # (k,i,j) -> (i,j,k)
+                if ki == kshift and kb == kconserv[kj,ka,kk]:
+                    tmp = 0.5*einsum('jkab,i->ijkab',eris.oovv[kj,kk,ka],l1)
+                    lijkab_tmp += 2.* tmp
+
+                # Beginning of ovvv terms
+
+                # (i,j,k) -> (i,j,k)
+                ke = kconserv[ka,ki,kb]
+                tmp = einsum('ieab,kje->ijkab',eris.ovvv[ki,ke,ka], l2[kk,kj])
+                lijkab_tmp += 2.*tmp
+
+                ke = kconserv[ka,kj,kb]
+                tmp = einsum('jeba,kie->ijkab',eris.ovvv[kj,ke,kb], l2[kk,ki])
+                lijkab_tmp += 2.*tmp
+
+                # (j,i,k) -> (i,j,k)
+                ke = kconserv[ka,kj,kb]
+                tmp = einsum('jeab,kie->ijkab',eris.ovvv[kj,ke,ka], l2[kk,ki])
+                lijkab_tmp -= 1.*tmp
+
+                ke = kconserv[ka,ki,kb]
+                tmp = einsum('ieba,kje->ijkab',eris.ovvv[ki,ke,kb], l2[kk, kj])
+                lijkab_tmp -= 1.*tmp
+
+                # (k,j,i) -> (i,j,k)
+                ke = kconserv[ki,kshift,kj]
+                tmp = einsum('keab,ije->ijkab',eris.ovvv[kk,ke,ka], l2[ki, kj])
+                lijkab_tmp -= 1.*tmp
+
+                ke = kconserv[ki,kshift,kj]
+                tmp = einsum('keba,jie->ijkab',eris.ovvv[kk,ke,kb], l2[kj, ki])
+                lijkab_tmp -= 1.*tmp
+
+                # ooov part 1
+
+                # (i,j,k) -> (i,j,k)
+                km = kconserv[kshift,ki,ka]
+                tmp = -einsum('kjmb,mia->ijkab',eris.ooov[kk,kj,km], l2[km, ki])
+                lijkab_tmp += 2.*tmp
+
+                km = kconserv[kshift,kj,kb]
+                tmp = -einsum('kima,mjb->ijkab',eris.ooov[kk,ki,km], l2[km, kj])
+                lijkab_tmp += 2.*tmp
+
+                # (j,i,k) -> (i,j,k)
+                km = kconserv[kshift,kj,ka]
+                tmp = -einsum('kimb,mja->ijkab',eris.ooov[kk,ki,km], l2[km, kj])
+                lijkab_tmp -= 1.*tmp
+
+                km = kconserv[kshift,ki,kb]
+                tmp = -einsum('kjma,mib->ijkab',eris.ooov[kk,kj,km], l2[km, ki])
+                lijkab_tmp -= 1.*tmp
+
+                # (k,j,i) -> (i,j,k)
+                km = kconserv[kshift,kj,kb]
+                tmp = -einsum('ikma,mjb->ijkab',eris.ooov[ki,kk,km], l2[km, kj])
+                lijkab_tmp -= 1.*tmp
+
+                km = kconserv[kshift,ki,ka]
+                tmp = -einsum('jkmb,mia->ijkab',eris.ooov[kj,kk,km], l2[km, ki])
+                lijkab_tmp -= 1.*tmp
+
+                # ooov part 2
+
+                # (i,j,k) -> (i,j,k)
+                km = kconserv[ki,kb,kj]
+                tmp = -einsum('ijmb,kma->ijkab',eris.ooov[ki,kj,km], l2[kk, km])
+                lijkab_tmp += 2.*tmp
+
+                km = kconserv[kj,ka,ki]
+                tmp = -einsum('jima,kmb->ijkab',eris.ooov[kj,ki,km], l2[kk, km])
+                lijkab_tmp += 2.*tmp
+
+                # (j,i,k) -> (i,j,k)
+                km = kconserv[ki,kb,kj]
+                tmp = -einsum('jimb,kma->ijkab',eris.ooov[kj,ki,km], l2[kk, km])
+                lijkab_tmp -= 1.*tmp
+
+                km = kconserv[kj,ka,ki]
+                tmp = -einsum('ijma,kmb->ijkab',eris.ooov[ki,kj,km], l2[kk, km])
+                lijkab_tmp -= 1.*tmp
+
+                # (k,j,i) -> (i,j,k)
+                km = kconserv[kshift,ki,kb]
+                tmp = -einsum('jkma,imb->ijkab',eris.ooov[kj,kk,km], l2[ki, km])
+                lijkab_tmp -= 1.*tmp
+
+                km = kconserv[kshift,kj,ka]
+                tmp = -einsum('ikmb,jma->ijkab',eris.ooov[ki,kk,km], l2[kj, km])
+                lijkab_tmp -= 1.*tmp
+
+                # Starting the right amplitude equations #
+
+                # (ia,jb) -> (ia,jb)
+                km = kconserv[ka,ki,kb]
+                tmp = einsum('mnjk,n->mjk',eris.oooo[km,kshift,kj],r1)
+                tmp2 = einsum('mjk,imab->ijkab',tmp,t2[ki, km, ka])
+                rijkab_tmp += tmp2
+
+                km = kshift
+                ke = kconserv[ki,ka,kj]
+                tmp = einsum('mbke,m->bke',eris.ovov[km,kb,kk],r1)
+                tmp2 = -einsum('bke,ijae->ijkab',tmp,t2[ki, kj, ka])
+                rijkab_tmp += tmp2
+
+                km = kshift
+                ke = kconserv[km,kj,kb]
+                tmp = einsum('mbej,m->bej',eris.ovvo[km,kb,ke],r1)
+                tmp2 = -einsum('bej,ikae->ijkab',tmp,t2[ki, kk, ka])
+                rijkab_tmp += tmp2
+
+                ke = kconserv[ka,ki,kb]
+                tmp2 = einsum('ieab,kje->ijkab',eris.ovvv[ki,ke,ka].conj(),r2[kk, kj])
+                rijkab_tmp += tmp2
+
+                km = kconserv[kshift,ki,ka]
+                tmp2 = -einsum('kjmb,mia->ijkab',eris.ooov[kk,kj,km].conj(),r2[km, ki])
+                rijkab_tmp += tmp2
+
+                km = kconserv[ki,kb,kj]
+                tmp2 = -einsum('mbij,kma->ijkab',eris.ovoo[km,kb,ki],r2[kk,km])
+                rijkab_tmp += tmp2
+
+                # (ia,jb) -> (jb,ia)
+                km = kconserv[kb,kj,ka]
+                tmp = einsum('mnik,n->mik',eris.oooo[km,kshift,ki],r1)
+                tmp2 = einsum('mik,jmba->ijkab',tmp,t2[kj, km, kb])
+                rijkab_tmp += tmp2
+
+                km = kshift
+                ke = kconserv[ki,kb,kj]
+                tmp = einsum('make,m->ake',eris.ovov[km,ka,kk],r1)
+                tmp2 = -einsum('ake,jibe->ijkab',tmp,t2[kj, ki, kb])
+                rijkab_tmp += tmp2
+
+                km = kshift
+                ke = kconserv[km,ki,ka]
+                tmp = einsum('maei,m->aei',eris.ovvo[km,ka,ke],r1)
+                tmp2 = -einsum('aei,jkbe->ijkab',tmp,t2[kj, kk, kb])
+                rijkab_tmp += tmp2
+
+                ke = kconserv[kb,kj,ka]
+                tmp2 = einsum('jeba,kie->ijkab',eris.ovvv[kj,ke,kb].conj(),r2[kk,   ki])
+                rijkab_tmp += tmp2
+
+                km = kconserv[kshift,kj,kb]
+                tmp2 = -einsum('kima,mjb->ijkab',eris.ooov[kk,ki,km].conj(),r2[km,  kj])
+                rijkab_tmp += tmp2
+
+                km = kconserv[kj,ka,ki]
+                tmp2 = -einsum('maji,kmb->ijkab',eris.ovoo[km,ka,kj],r2[kk,km])
+                rijkab_tmp += tmp2
+
+                eijk = (foo[ki][:, None, None] + foo[kj][None, :, None] +
+                        foo[kk][None, None, :])
+                eab = fvv[ka][:, None] + fvv[kb][None, :]
+                eijkab = eijk[:, :, :, None, None] - eab[None, None, None, :, :]
+                denom = eijkab + ip_eval
+                denom = 1. / denom
+
+                deltaE += fac*0.5*einsum('ijkab,ijkab,ijkab',lijkab_tmp,rijkab_tmp,denom)
+
+            logger.info(self, "Exc. energy, delta energy = %16.12f, %16.12f",
+                        ip_eval + deltaE.real, deltaE.real)
+            e_star.append(ip_eval + deltaE.real)
+
+        return e_star
+
 
     def eaccsd(self, nroots=1, koopmans=False, guess=None, partition=None,
                kptlist=None):
@@ -1588,10 +1811,13 @@ class _ERIS:#(pyscf.cc.ccsd._ChemistsERIs):
             log.info('using incore ERI storage')
             self.oooo = numpy.zeros((nkpts,nkpts,nkpts,nocc,nocc,nocc,nocc), dtype=dtype)
             self.ooov = numpy.zeros((nkpts,nkpts,nkpts,nocc,nocc,nocc,nvir), dtype=dtype)
+            self.ovoo = numpy.zeros((nkpts,nkpts,nkpts,nocc,nvir,nocc,nocc), dtype=dtype)
             self.oovv = numpy.zeros((nkpts,nkpts,nkpts,nocc,nocc,nvir,nvir), dtype=dtype)
             self.ovov = numpy.zeros((nkpts,nkpts,nkpts,nocc,nvir,nocc,nvir), dtype=dtype)
             self.voov = numpy.zeros((nkpts,nkpts,nkpts,nvir,nocc,nocc,nvir), dtype=dtype)
+            self.ovvo = numpy.zeros((nkpts,nkpts,nkpts,nocc,nvir,nvir,nocc), dtype=dtype)
             self.vovv = numpy.zeros((nkpts,nkpts,nkpts,nvir,nocc,nvir,nvir), dtype=dtype)
+            self.ovvv = numpy.zeros((nkpts,nkpts,nkpts,nocc,nvir,nvir,nvir), dtype=dtype)
             self.vvvv = numpy.zeros((nkpts,nkpts,nkpts,nvir,nvir,nvir,nvir), dtype=dtype)
 
             for (ikp,ikq,ikr) in khelper.symm_map.keys():
@@ -1604,10 +1830,13 @@ class _ERIS:#(pyscf.cc.ccsd._ChemistsERIs):
                     eri_kpt_symm = khelper.transform_symm(eri_kpt,kp,kq,kr).transpose(0,2,1,3)
                     self.oooo[kp,kr,kq] = eri_kpt_symm[:nocc,:nocc,:nocc,:nocc] / nkpts
                     self.ooov[kp,kr,kq] = eri_kpt_symm[:nocc,:nocc,:nocc,nocc:] / nkpts
+                    self.ovoo[kp,kr,kq] = eri_kpt_symm[:nocc,nocc:,:nocc,:nocc] / nkpts
                     self.oovv[kp,kr,kq] = eri_kpt_symm[:nocc,:nocc,nocc:,nocc:] / nkpts
                     self.ovov[kp,kr,kq] = eri_kpt_symm[:nocc,nocc:,:nocc,nocc:] / nkpts
                     self.voov[kp,kr,kq] = eri_kpt_symm[nocc:,:nocc,:nocc,nocc:] / nkpts
+                    self.ovvo[kp,kr,kq] = eri_kpt_symm[:nocc,nocc:,nocc:,:nocc] / nkpts
                     self.vovv[kp,kr,kq] = eri_kpt_symm[nocc:,:nocc,nocc:,nocc:] / nkpts
+                    self.ovvv[kp,kr,kq] = eri_kpt_symm[:nocc,nocc:,nocc:,nocc:] / nkpts
                     self.vvvv[kp,kr,kq] = eri_kpt_symm[nocc:,nocc:,nocc:,nocc:] / nkpts
 
             self.dtype = dtype
