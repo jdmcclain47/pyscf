@@ -1039,8 +1039,16 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
                 deltaE = 0.0 + 0.0*1j
                 for ki, kj, ka, kb in product(range(nkpts), repeat=4):
                     fac = 1.
-                    #if ka > kb:
-                    #    continue
+                    if ka > kb:
+                        continue
+                    fac = (2.0 - float(ka==kb))
+
+                    if ka == kb:
+                        if ki > kj:
+                            continue
+                        else:
+                            fac *= (2.0 - float(ki==kj))
+
                     kk = tools.get_kconserv3(self._scf.cell, self.kpts,
                                              [ka, kb ,kshift, ki, kj])
                     lijkab_tmp = numpy.zeros((nocc,nocc,nocc,nvir,nvir), dtype=t2.dtype)
@@ -1240,7 +1248,6 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
 
             e_star.append(e_star_kpt)
         return e_star
-
 
     def eaccsd(self, nroots=1, koopmans=False, guess=None, partition=None,
                kptlist=None):
