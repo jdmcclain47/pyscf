@@ -933,6 +933,244 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         vector = self.amplitudes_to_vector_ip(r1, r2)
         return vector
 
+    def get_t3p2_amplitude_contribution(self, t1, t2, eris=None, inplace=False):
+        '''Calculates T1, T2 amplitudes corrected by second-order T3 contribution
+
+        Args:
+            t1 (:obj:`ndarray`):
+                T1 amplitudes.
+            t2 (:obj:`ndarray`):
+                T2 amplitudes from which the T3[2] amplitudes are formed.
+            eris (:obj:`_PhysicistsERIs`):
+                Antisymmetrized electron-repulsion integrals in physicist's notation.
+            inplace (bool):
+                Whether to change the t1, t2 inplace.  Will overwrite input.
+
+        Returns:
+            delta_ccsd (float):
+                Difference of perturbed and unperturbed CCSD ground-state energy,
+                    energy(T1 + T1[2], T2 + T2[2]) - energy(T1, T2)
+            pt1 (:obj:`ndarray`):
+                Perturbatively corrected T1 amplitudes.
+            pt2 (:obj:`ndarray`):
+                Perturbatively corrected T2 amplitudes.
+
+        Reference:
+            D. A. Matthews, J. F. Stanton "A new approach to approximate..."
+                JCP 145, 124102 (2016), Equation 14
+            Shavitt and Bartlett "Many-body Methods in Physics and Chemistry"
+                2009, Equation 10.33
+        '''
+        eris = self.eris
+        fock = eris.fock
+        nocc = self.nocc
+        nmo = self.nmo
+        nvir = nmo - nocc
+        nkpts = self.nkpts
+        kconserv = self.khelper.kconserv
+        #assert(isinstance(eris, gccsd._PhysicistsERIs))
+
+        fov = fock[:, :nocc, nocc:]
+        foo = [fock[ikpt, :nocc, :nocc].diagonal() for ikpt in range(nkpts)]
+        fvv = [fock[ikpt, nocc:, nocc:].diagonal() for ikpt in range(nkpts)]
+
+        ccsd_energy = self.energy(t1, t2, eris)
+
+        if inplace:
+            pt1 = t1
+            pt2 = t2
+        else:
+            pt1 = t1.copy()
+            pt2 = t2.copy()
+
+        # The following code snippet generates the contribution for
+        # t1/t2 amplitudes in a more straightforward way, but with a
+        # larger memory footprint
+        #
+        # BEGIN code snippet
+        #
+        from itertools import product
+        assert(inplace == False)
+        tmp_t3 = np.empty((nkpts, nkpts, nkpts, nkpts, nkpts, nocc, nocc, nocc, nvir, nvir, nvir),
+                          dtype = t2.dtype)
+
+        def get_v(ki, kj, kk, ka, kb, kc):
+            kd = kconserv[kb, kk, kc]
+            ret = lib.einsum('bcdk,ijad->ijkabc', eris.vvvo[kb, kc, kd], t2[ki, kj, ka])
+            km = kconserv[ka, ki, kb]
+            ret -= lib.einsum('cmkj,imab->ijkabc', eris.vooo[kc, km, kk], t2[ki, km, ka])
+            return ret
+
+        for ki, kj, kk, ka, kb in product(range(nkpts), repeat=5):
+            kc = tools.get_kconserv3(self._scf.cell, self.kpts,
+                                     [ki, kj, kk, ka, kb])
+            tmp_t3[ki, kj, kk, ka, kb] = get_v(ki, kj, kk, ka, kb, kc)
+            tmp_t3[ki, kj, kk, ka, kb] += get_v(ki, kk, kj, ka, kc, kb).transpose(0, 2, 1, 3, 5, 4)
+            tmp_t3[ki, kj, kk, ka, kb] += get_v(kj, ki, kk, kb, ka, kc).transpose(1, 0, 2, 4, 3, 5)
+            tmp_t3[ki, kj, kk, ka, kb] += get_v(kj, kk, ki, kb, kc, ka).transpose(1, 2, 0, 4, 5, 3)
+            tmp_t3[ki, kj, kk, ka, kb] += get_v(kk, ki, kj, kc, ka, kb).transpose(2, 0, 1, 5, 3, 4)
+            tmp_t3[ki, kj, kk, ka, kb] += get_v(kk, kj, ki, kb, kb, ka).transpose(2, 1, 0, 5, 4, 3)
+
+            eijk = foo[ki][:, None, None] + foo[kj][None, :, None] + foo[kk][None, None, :]
+            eabc = fvv[ka][:, None, None] + fvv[kb][None, :, None] + fvv[kc][None, None, :]
+            eijkabc = eijk[:, :, :, None, None, None] - eabc[None, None, None, :, :, :]
+            tmp_t3[ki, kj, kk, ka, kb] /= eijkabc
+
+        pt1 = np.zeros((nkpts, nocc, nvir), dtype=t2.dtype)
+        for ki in range(nkpts):
+            for km, kn, ke in product(range(nkpts), repeat=3):
+                kf = kconserv[km, ke, kn]
+                Soovv = 2. * eris.oovv[km, kn, ke] - eris.oovv[km, kn, kf].transpose(0, 1, 3, 2)
+                St3 = (tmp_t3[ki, kj, kk, ka, kb] -
+                       tmp_t3[ki, kj, kk, kb, ka].transpose(0, 1, 2, 4, 3, 5))
+                pt1[ki] += lib.einsum('mnef,imnaef->ia', Soovv, St3)
+
+        pt2 = np.zeros((nkpts, nkpts, nkpts, nocc, nocc, nvir, nvir), dtype=t2.dtype)
+        for ki, kj, ka in product(range(nkpts), repeat=3):
+            kb = kconserv[ki, ka, kj]
+            for km in range(nkpts):
+                for kn in range(nkpts):
+                    # (ia,jb) -> (ia,jb)
+                    ke = kconserv[km, kj, kn]
+                    pt2[ki, kj, ka] += - 2. * lib.einsum('imnabe,mnje->ijab',
+                                                         tmp_t3[ki, km, kn, ka, kb],
+                                                         eris.ooov[km, kn, kj])
+                    pt2[ki, kj, ka] += lib.einsum('imnabe,nmje->ijab',
+                                                  tmp_t3[ki, km, kn, ka, kb],
+                                                  eris.ooov[kn, km, kj])
+                    pt2[ki, kj, ka] += lib.einsum('inmeab,mnje->ijab',
+                                                  tmp_t3[ki, kn, km, ke, ka],
+                                                  eris.ooov[km, kn, kj])
+
+                    # (ia,jb) -> (jb,ia)
+                    ke = kconserv[km, ki, kn]
+                    pt2[ki, kj, ka] += - 2. * lib.einsum('jmnbae,mnie->ijab',
+                                                         tmp_t3[kj, km, kn, kb, ka],
+                                                         eris.ooov[km, kn, ki])
+                    pt2[ki, kj, ka] += lib.einsum('jmnbae,nmie->ijab',
+                                                  tmp_t3[kj, km, kn, kb, ka],
+                                                  eris.ooov[kn, km, ki])
+                    pt2[ki, kj, ka] += lib.einsum('jnmeba,mnie->ijab',
+                                                  tmp_t3[kj, kn, km, ke, kb],
+                                                  eris.ooov[km, kn, ki])
+
+                # (ia,jb) -> (ia,jb)
+                pt2[ki, kj, ka] += lib.einsum('ijmabe,me->ijab',
+                                              tmp_t3[ki, kj, km, ka, kb],
+                                              fov[km])
+                pt2[ki, kj, ka] -= lib.einsum('ijmaeb,me->ijab',
+                                              tmp_t3[ki, kj, km, ka, km],
+                                              fov[km])
+
+                # (ia,jb) -> (jb,ia)
+                pt2[ki, kj, ka] += lib.einsum('jimbae,me->ijab',
+                                              tmp_t3[kj, ki, km, kb, ka],
+                                              fov[km])
+                pt2[ki, kj, ka] -= lib.einsum('jimbea,me->ijab',
+                                              tmp_t3[kj, ki, km, kb, km],
+                                              fov[km])
+
+                for ke in range(nkpts):
+                    # (ia,jb) -> (ia,jb)
+                    kf = kconserv[km, ke, kb]
+                    pt2[ki, kj, ka] += 2. * lib.einsum('ijmaef,mbfe->ijab',
+                                                       tmp_t3[ki, kj, km, ka, ke],
+                                                       eris.ovvv[km, kb, kf])
+                    pt2[ki, kj, ka] -= lib.einsum('ijmaef,mbef->ijab',
+                                                  tmp_t3[ki, kj, km, ka, ke],
+                                                  eris.ovvv[km, kb, ke])
+                    pt2[ki, kj, ka] -= lib.einsum('imjfae,mbfe->ijab',
+                                                  tmp_t3[ki, km, kj, kf, ka],
+                                                  eris.ovvv[km, kb, kf])
+
+                    # (ia,jb) -> (jb,ia)
+                    kf = kconserv[km, ke, ka]
+                    pt2[ki, kj, ka] += 2. * lib.einsum('jimbef,mafe->ijab',
+                                                       tmp_t3[kj, ki, km, kb, ke],
+                                                       eris.ovvv[km, ka, kf])
+                    pt2[ki, kj, ka] -= lib.einsum('jimbef,maef->ijab',
+                                                  tmp_t3[kj, ki, km, kb, ke],
+                                                  eris.ovvv[km, ka, ke])
+                    pt2[ki, kj, ka] -= lib.einsum('jmifbe,mafe->ijab',
+                                                  tmp_t3[kj, km, ki, kf, kb],
+                                                  eris.ovvv[km, ka, kf])
+
+        for ki in range(nkpts):
+            eii = foo[ki][:, None] - fvv[ki][None, :]
+            pt1[ki] /= eii
+
+        for ki, ka in product(range(nkpts), repeat=2):
+            eia = foo[ki][:, None] - fvv[ka][None, :]
+            for kj in range(nkpts):
+                kb = kconserv[ki, ka, kj]
+                ejb = foo[kj][:, None] - fvv[kb][None, :]
+                eijab = eia[:, None, :, None] + ejb[None, :, None, :]
+                pt2 /= eijab
+
+        pt1 += t1
+        pt2 += t2
+        #
+        # END code snippet
+        #
+
+        #def get_v(a, b, c):
+        #    out = lib.einsum('dk,ijd->ijk', vvvo[b, c], t2[:, :, a, :])
+        #    out -= lib.einsum('mkj,im->ijk', vooo[c], t2[:, :, a, b])
+        #    return out
+
+        #from itertools import product
+        #eij = foo[:, None] + foo[None, :]
+        #eia = foo[:, None] - fvv[None, :]
+        #eijk = eij[:, :, None] + foo[None, None, :]
+        #for a, b, c in product(range(nvir), repeat=3):
+        #    vabc = get_v(a, b, c)
+        #    vacb = get_v(a, c, b).transpose(0, 2, 1)
+        #    vbac = get_v(b, a, c).transpose(1, 0, 2)
+        #    vbca = get_v(b, c, a).transpose(2, 0, 1)
+        #    vcba = get_v(c, b, a).transpose(2, 1, 0)
+        #    vcab = get_v(c, a, b).transpose(1, 2, 0)
+        #    eijkabc = eijk - fvv[a] - fvv[b] - fvv[c]
+        #    eijb = eij[:, :, None] - fvv[a] - fvv[None, None, :]
+        #    t3 = (vabc + vacb + vbac + vbca + vcba + vcab) / eijkabc
+
+        #    if b <= c:
+        #        Soovv = 2. * oovv[:, :, b, c] - oovv[:, :, c, b]
+
+        #        bc_fac = 1.
+        #        if b != c:
+        #            bc_fac = 2.
+
+        #        pt1_i = bc_fac * lib.einsum('mn,imn->i', Soovv, t3)
+        #        pt1_i -= 0.5 * bc_fac * lib.einsum('mn,min->i', Soovv, t3)
+        #        pt1_i -= 0.5 * bc_fac * lib.einsum('nm,mni->i', Soovv, t3)
+        #        pt1[:, a] += pt1_i / eia[:, a]
+
+        #    pt2_ij = np.empty((nocc, nocc), dtype=t2.dtype)
+        #    Sooov = 2. * ooov[:, :, :, c] - ooov[:, :, :, c].transpose(1, 0, 2)
+        #    tmp = lib.einsum('imn,mnj->ij', t3, Sooov)
+        #    pt2_ij = -tmp
+        #    tmp = lib.einsum('nmi,mnj->ij', t3, ooov[:, :, :, c])
+        #    pt2_ij += tmp
+
+        #    tmp = lib.einsum('ijm,m->ij', t3, fov[:, c])
+        #    pt2_ij += tmp
+        #    tmp = lib.einsum('imj,m->ij', t3, fov[:, c])
+        #    pt2_ij -= tmp
+        #    pt2[:, :, a, b] += pt2_ij / eijb[:, :, b]
+        #    pt2[:, :, b, a] += pt2_ij.transpose(1, 0) / eijb[:, :, b]
+
+        #    pt2_ija = np.empty((nocc, nocc, nvir), dtype=t2.dtype)
+        #    Sovvv = 2. * ovvv[:, :, b, c] - ovvv[:, :, c, b]
+        #    pt2_ija = lib.einsum('imj,mf->ijf', t3, Sovvv)
+        #    pt2_ija -= lib.einsum('mij,mf->ijf', t3, ovvv[:, :, b, c])
+        #    pt2[:, :, a, :] += pt2_ija / eijb
+        #    pt2[:, :, :, a] += pt2_ija.transpose(1, 0, 2) / eijb
+
+        delta_ccsd_energy = self.energy(pt1, pt2, eris) - ccsd_energy
+        logger.info(self, 'CCSD energy T3[2] correction : %14.8e', delta_ccsd_energy)
+
+        return delta_ccsd_energy, pt1, pt2
+
     def vector_size_ea(self):
         nocc = self.nocc
         nvir = self.nmo - nocc
@@ -1835,11 +2073,13 @@ class _ERIS:#(pyscf.cc.ccsd._ChemistsERIs):
             self.oooo = numpy.zeros((nkpts,nkpts,nkpts,nocc,nocc,nocc,nocc), dtype=dtype)
             self.ooov = numpy.zeros((nkpts,nkpts,nkpts,nocc,nocc,nocc,nvir), dtype=dtype)
             self.ovoo = numpy.zeros((nkpts,nkpts,nkpts,nocc,nvir,nocc,nocc), dtype=dtype)
+            self.vooo = numpy.zeros((nkpts,nkpts,nkpts,nvir,nocc,nocc,nocc), dtype=dtype)
             self.oovv = numpy.zeros((nkpts,nkpts,nkpts,nocc,nocc,nvir,nvir), dtype=dtype)
             self.ovov = numpy.zeros((nkpts,nkpts,nkpts,nocc,nvir,nocc,nvir), dtype=dtype)
             self.voov = numpy.zeros((nkpts,nkpts,nkpts,nvir,nocc,nocc,nvir), dtype=dtype)
             self.ovvo = numpy.zeros((nkpts,nkpts,nkpts,nocc,nvir,nvir,nocc), dtype=dtype)
             self.vovv = numpy.zeros((nkpts,nkpts,nkpts,nvir,nocc,nvir,nvir), dtype=dtype)
+            self.vvvo = numpy.zeros((nkpts,nkpts,nkpts,nvir,nvir,nvir,nocc), dtype=dtype)
             self.ovvv = numpy.zeros((nkpts,nkpts,nkpts,nocc,nvir,nvir,nvir), dtype=dtype)
             self.vvvv = numpy.zeros((nkpts,nkpts,nkpts,nvir,nvir,nvir,nvir), dtype=dtype)
 
@@ -1860,6 +2100,8 @@ class _ERIS:#(pyscf.cc.ccsd._ChemistsERIs):
                     self.ovvo[kp,kr,kq] = eri_kpt_symm[:nocc,nocc:,nocc:,:nocc] / nkpts
                     self.vovv[kp,kr,kq] = eri_kpt_symm[nocc:,:nocc,nocc:,nocc:] / nkpts
                     self.ovvv[kp,kr,kq] = eri_kpt_symm[:nocc,nocc:,nocc:,nocc:] / nkpts
+                    self.vvvo[kp,kr,kq] = eri_kpt_symm[nocc:,nocc:,nocc:,:nocc] / nkpts
+                    self.vooo[kp,kr,kq] = eri_kpt_symm[nocc:,:nocc,:nocc,:nocc] / nkpts
                     self.vvvv[kp,kr,kq] = eri_kpt_symm[nocc:,nocc:,nocc:,nocc:] / nkpts
 
             self.dtype = dtype
