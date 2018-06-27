@@ -1007,9 +1007,9 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
             tmp_t3[ki, kj, kk, ka, kb] = get_v(ki, kj, kk, ka, kb, kc)
             tmp_t3[ki, kj, kk, ka, kb] += get_v(ki, kk, kj, ka, kc, kb).transpose(0, 2, 1, 3, 5, 4)
             tmp_t3[ki, kj, kk, ka, kb] += get_v(kj, ki, kk, kb, ka, kc).transpose(1, 0, 2, 4, 3, 5)
-            tmp_t3[ki, kj, kk, ka, kb] += get_v(kj, kk, ki, kb, kc, ka).transpose(1, 2, 0, 4, 5, 3)
-            tmp_t3[ki, kj, kk, ka, kb] += get_v(kk, ki, kj, kc, ka, kb).transpose(2, 0, 1, 5, 3, 4)
-            tmp_t3[ki, kj, kk, ka, kb] += get_v(kk, kj, ki, kb, kb, ka).transpose(2, 1, 0, 5, 4, 3)
+            tmp_t3[ki, kj, kk, ka, kb] += get_v(kj, kk, ki, kb, kc, ka).transpose(2, 0, 1, 5, 3, 4)
+            tmp_t3[ki, kj, kk, ka, kb] += get_v(kk, ki, kj, kc, ka, kb).transpose(1, 2, 0, 4, 5, 3)
+            tmp_t3[ki, kj, kk, ka, kb] += get_v(kk, kj, ki, kc, kb, ka).transpose(2, 1, 0, 5, 4, 3)
 
             eijk = foo[ki][:, None, None] + foo[kj][None, :, None] + foo[kk][None, None, :]
             eabc = fvv[ka][:, None, None] + fvv[kb][None, :, None] + fvv[kc][None, None, :]
@@ -1021,8 +1021,8 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
             for km, kn, ke in product(range(nkpts), repeat=3):
                 kf = kconserv[km, ke, kn]
                 Soovv = 2. * eris.oovv[km, kn, ke] - eris.oovv[km, kn, kf].transpose(0, 1, 3, 2)
-                St3 = (tmp_t3[ki, kj, kk, ka, kb] -
-                       tmp_t3[ki, kj, kk, kb, ka].transpose(0, 1, 2, 4, 3, 5))
+                St3 = (tmp_t3[ki, km, kn, ki, ke] -
+                       tmp_t3[ki, km, kn, ke, ki].transpose(0, 1, 2, 4, 3, 5))
                 pt1[ki] += lib.einsum('mnef,imnaef->ia', Soovv, St3)
 
         pt2 = np.zeros((nkpts, nkpts, nkpts, nocc, nocc, nvir, nvir), dtype=t2.dtype)
@@ -1105,7 +1105,7 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
                 kb = kconserv[ki, ka, kj]
                 ejb = foo[kj][:, None] - fvv[kb][None, :]
                 eijab = eia[:, None, :, None] + ejb[None, :, None, :]
-                pt2 /= eijab
+                pt2[ki, kj, ka] /= eijab
 
         pt1 += t1
         pt2 += t2
@@ -1167,7 +1167,7 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         #    pt2[:, :, :, a] += pt2_ija.transpose(1, 0, 2) / eijb
 
         delta_ccsd_energy = self.energy(pt1, pt2, eris) - ccsd_energy
-        logger.info(self, 'CCSD energy T3[2] correction : %14.8e', delta_ccsd_energy)
+        logger.info(self, 'CCSD energy T3[2] correction : %16.12e', delta_ccsd_energy)
 
         return delta_ccsd_energy, pt1, pt2
 
@@ -1261,10 +1261,10 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
                 r1, r2 = self.vector_to_amplitudes_ip(ip_evec)
                 ldotr = np.dot(l1, r1) + np.dot(l2.ravel(), r2.ravel())
 
-                logger.info(self, 'Left-right amplitude overlap : %14.8e', ldotr)
+                logger.info(self, 'Left-right amplitude overlap : %14.8e', ldotr.real)
                 if abs(ldotr) < 1e-7:
                     logger.warn(self, 'Small %s left-right amplitude overlap. Results '
-                                     'may be inaccurate.', ldotr)
+                                     'may be inaccurate.', ldotr.real)
 
                 l1 /= ldotr
                 l2 /= ldotr
