@@ -1269,12 +1269,6 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
                 l1 /= ldotr
                 l2 /= ldotr
 
-                ldotr = numpy.dot(l1.ravel(),r1.ravel()) + numpy.dot(l2.ravel(),r2.ravel())
-                original_l2 = l2.copy()
-
-                l1 /= ldotr
-                l2 /= ldotr
-
                 deltaE = 0.0 + 0.0*1j
                 for ki, kj, ka, kb in product(range(nkpts), repeat=4):
                     fac = 1.
