@@ -441,7 +441,7 @@ def get_t3p2_amplitude_contribution(eom, t1, t2, eris=None, inplace=False):
         pt2[:, :, :, a] += pt2_ija.transpose(1, 0, 2) / eijb
 
     delta_ccsd_energy = rccsd.energy(None, pt1, pt2, eris) - ccsd_energy
-    logger.info(eom, 'CCSD energy T3[2] correction : %14.8e', delta_ccsd_energy)
+    logger.info(eom, 'CCSD energy T3[2] correction : %16.12e', delta_ccsd_energy)
 
     return delta_ccsd_energy, pt1, pt2
 
