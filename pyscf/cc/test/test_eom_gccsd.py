@@ -122,6 +122,27 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(e[1], 0.42181947976275236, 6)
         self.assertAlmostEqual(e[2], 0.49645920761415335, 6)
 
+    def test_ipccsd_ooh(self):
+        # FIXME: Delete me fam
+        mol = gto.Mole()
+        mol.atom = '''
+        H 0 0 0
+        O 0 0.9737 0
+        O 1.3003904423144701 1.3028483822490653 0
+        '''
+        mol.basis = 'dzp'
+        mol.verbose = 7
+        #mol.output = '/dev/null'
+        mol.charge = -1
+        #mol.spin = 1
+        mol.build()
+        mf = scf.GHF(mol).run()
+        mycc = cc.GCCSD(mf).run()
+        myeom = eom_gccsd.EOMIP(mycc)
+        imds = myeom.make_imds()
+        e,v = myeom.ipccsd(nroots=3, imds=imds)
+        e,lv = myeom.ipccsd(nroots=3, left=True, imds=imds)
+        myeom.ipccsd_star(e, v, lv, eris=imds.eris, type1=True)
 
     def test_eaccsd(self):
         e,v = mycc.eaccsd(nroots=1)
