@@ -18,7 +18,7 @@ import numpy as np
 
 from pyscf import lib
 from pyscf.lib import logger
-from pyscf.cc import ccsd
+from pyscf.cc import ccsd, gccsd
 from pyscf.cc import eom_rccsd
 from pyscf.cc import gintermediates as imd
 
@@ -308,6 +308,7 @@ class EOMIP(eom_rccsd.EOMIP):
     matvec = ipccsd_matvec
     l_matvec = lipccsd_matvec
     get_diag = ipccsd_diag
+    #ipccsd_t_a_star = ipccsd_t_a_star
     ipccsd_star = ipccsd_star
 
     def gen_matvec(self, imds=None, left=False, **kwargs):
@@ -490,12 +491,176 @@ def eaccsd_diag(eom, imds=None):
     vector = amplitudes_to_vector_ea(Hr1, Hr2)
     return vector
 
+def eaccsd_star(eom, eaccsd_evals, eaccsd_evecs, leaccsd_evecs,
+                eris=None, type1=False, type2=False):
+    """Calculates perturbative correction EA-CCSD*
+
+    Args:
+        eom (:obj:`EOMEA`):
+            Object containing coupled-cluster results.
+        eaccsd_evals (array-like):
+            Right EOM-EA-CCSD eigenvalues; should be same as left eigenvalues.
+        eaccsd_evecs (array-like of :obj:`ndarray`):
+            List of right EOM-EA-CCSD eigenvectors.
+        leaccsd_evecs (array-like of :obj:`ndarray`):
+            List of left EOM-EA-CCSD eigenvectors.
+        eris (:obj:`_PhysicistsERIs`):
+            Antisymmetrized electron-repulsion integrals in physicist's notation.
+        type1 (bool):
+            Include type1 terms (defined in ref.) in perturbation.
+        type2 (bool):
+            Include type2 terms (defined in ref.) in perturbation.
+
+    Returns:
+        e_star (list of float):
+            The return value. True for success, False otherwise.
+
+    Notes:
+        The user should check to make sure the right and left eigenvalues
+        before running the perturbative correction.
+
+        The 2ph left and right amplitudes are assumed to be of the form s^{ab}_{ j},
+        i.e. the (jb) indices are coupled.
+
+    Reference:
+        The EA-CCSD* is analogous to the IP-CCSD* found in the reference:
+
+            Saeh, Stanton "...energy surfaces of radicals" JCP 111, 8275 (1999)
+
+    """
+    assert (eom.partition == None)
+    if eris is None:
+        eris = eom._cc.ao2mo()
+    t1, t2 = eom._cc.t1, eom._cc.t2
+    fock = eris.fock
+    nocc = eom.nocc
+    nmo = eom.nmo
+    nvir = nmo - nocc
+
+    fov = fock[:nocc, nocc:].diagonal()
+    foo = fock[:nocc, :nocc].diagonal()
+    fvv = fock[nocc:, nocc:].diagonal()
+
+    vvvv = _cp(eris.vvvv)
+    oovv = _cp(eris.oovv)
+    ovvv = _cp(eris.ovvv)
+    ovov = _cp(eris.ovov)
+    ovvo = -_cp(eris.ovov).transpose(0,1,3,2)
+    ooov = _cp(eris.ooov)
+    vooo = _cp(ooov).conj().transpose(3,2,1,0)
+    vvvo = _cp(ovvv).conj().transpose(3,2,1,0)
+
+    # Create denominator
+    eabc = fvv[:, None, None] + fvv[None, :, None] + fvv[None, None, :]
+    eij = foo[:, None] + foo[None, :]
+    eijabc = eij[:, :, None, None, None] - eabc[None, None, :, :, :]
+
+    # Permutation operators
+    def pabc(tmp):
+        '''P(abc)'''
+        return tmp + tmp.transpose(0,1,3,4,2) + tmp.transpose(0,1,4,2,3)
+
+    def pij(tmp):
+        '''P(ij)'''
+        return tmp - tmp.transpose(1,0,2,3,4)
+
+    def pab(tmp):
+        '''P(ab)'''
+        return tmp - tmp.transpose(0,1,3,2,4)
+
+    eaccsd_evecs = np.array(eaccsd_evecs)
+    leaccsd_evecs = np.array(leaccsd_evecs)
+    e_star = []
+    for ea_eval, ea_evec, ea_levec in zip(eaccsd_evals, eaccsd_evecs, leaccsd_evecs):
+        # Enforcing <L|R> = 1
+        l1, l2 = vector_to_amplitudes_ea(ea_levec, nmo, nocc)
+        r1, r2 = vector_to_amplitudes_ea(ea_evec, nmo, nocc)
+        ldotr = np.dot(l1, r1) + 0.5 * np.dot(l2.ravel(), r2.ravel())
+
+        logger.info(eom, 'Left-right amplitude overlap : %14.8e', ldotr)
+        if abs(ldotr) < 1e-7:
+            logger.warn(eom, 'Small %s left-right amplitude overlap. Results '
+                             'may be inaccurate.', ldotr)
+
+        l1 /= ldotr
+        l2 /= ldotr
+
+        # Denominator + eigenvalue(EA-CCSD)
+        denom = eijabc + ea_eval
+        denom = 1. / denom
+
+        tmp = lib.einsum('c,ijab->ijabc', l1, oovv)
+        lijabc = -pabc(tmp)
+        tmp = lib.einsum('jima,mbc->ijabc', ooov, l2)
+        lijabc += -pabc(tmp)
+        tmp = lib.einsum('ieab,jce->ijabc', ovvv, l2)
+        tmp = pabc(tmp)
+        lijabc += -pij(tmp)
+
+        tmp = lib.einsum('bcef,f->bce', vvvv, r1)
+        tmp = lib.einsum('bce,ijae->ijabc', tmp, t2)
+        rijabc = -pabc(tmp)
+        tmp = lib.einsum('mcje,e->mcj', ovov, r1)
+        tmp = lib.einsum('mcj,imab->ijabc', tmp, t2)
+        tmp = pabc(tmp)
+        rijabc += pij(tmp)
+        tmp = lib.einsum('amij,mcb->ijabc', vooo, r2)
+        rijabc += pabc(tmp)
+        tmp = lib.einsum('baei,jce->ijabc', vvvo, r2)
+        tmp = pabc(tmp)
+        rijabc -= pij(tmp)
+
+        if type1:
+            tmp = lib.einsum('mce,mbef->cbf', r2, ovvv)
+            tmp2 = lib.einsum('cbf,jifa->ijabc', tmp, t2)
+            tmp2 = pab(tmp2)
+            rijabc -= pabc(tmp2)
+
+            tmp = lib.einsum('mce,kmje->cjk', r2, ooov)
+            tmp2 = lib.einsum('cjk,ikab->ijabc', tmp, t2)
+            tmp2 = pij(tmp2)
+            rijabc += pabc(tmp2)
+
+            tmp = 0.5 * lib.einsum('jfe,kcef->kjc', r2, ovvv)
+            tmp2 = lib.einsum('kjc,ikab->ijabc', tmp, t2)
+            tmp2 = pij(tmp2)
+            rijabc += pabc(tmp2)
+
+        if type2:
+            tmp = lib.einsum('kmje,imae->ijka', ooov, t2)
+            tmp2 = lib.einsum('ijka,kcb->ijabc', tmp, r2)
+            tmp2 = pij(tmp2)
+            rijabc += pabc(tmp2)
+
+            tmp = lib.einsum('jcf,mbef->jmebc', r2, ovvv)
+            tmp = tmp - tmp.transpose(0,1,2,4,3)
+            tmp2 = lib.einsum('imae,jmebc->ijabc', t2, tmp)
+            tmp2 = pij(tmp2)
+            rijabc -= pabc(tmp2)
+
+            tmp = 0.5 * lib.einsum('nmie,njae->iajm', ooov, t2)
+            tmp2 = lib.einsum('iajm,mcb->ijabc', tmp, r2)
+            tmp2 = pij(tmp2)
+            rijabc -= pabc(tmp2)
+
+            tmp = 0.5 * lib.einsum('kaef,ijfe->kija', ovvv, t2)
+            tmp2 = lib.einsum('kija,kcb->ijabc', tmp, r2)
+            rijabc += pabc(tmp2)
+
+        deltaE = (1. / 12) * lib.einsum('ijabc,ijabc,ijabc', lijabc, rijabc, denom)
+        deltaE = deltaE.real
+        logger.info(eom, "Exc. energy, delta energy = %16.12f, %16.12f",
+                    ea_eval + deltaE, deltaE)
+        e_star.append(ea_eval + deltaE)
+
+    return e_star
+
 
 class EOMEA(eom_rccsd.EOMEA):
     matvec = eaccsd_matvec
     l_matvec = leaccsd_matvec
     get_diag = eaccsd_diag
-    eaccsd_star = None
+    eaccsd_star = eaccsd_star
 
     def gen_matvec(self, imds=None, left=False, **kwargs):
         with_t3p2 = kwargs.pop('with_t3p2', False)
@@ -730,14 +895,14 @@ def get_t3p2_amplitude_contribution(t1, t2, eris, return_t3=False):
     t3 = lib.einsum('bcdk,ijad->ijkabc', vvvo, t2)
     t3 -= lib.einsum('cmkj,imab->ijkabc', vooo, t2)
     # P(ijk)
-    t3 = (t3 + t3.transpose(1, 2, 0, 3, 4, 5) +
-                       t3.transpose(2, 0, 1, 3, 4, 5))
+    t3 = (t3 + t3.transpose(1,2,0,3,4,5) +
+               t3.transpose(2,0,1,3,4,5))
     # P(abc)
-    t3 = (t3 + t3.transpose(0, 1, 2, 4, 5, 3) +
-                       t3.transpose(0, 1, 2, 5, 3, 4))
-    eia = foo[:, None] - fvv[None, :]
-    eijab = eia[:, None, :, None] + eia[None, :, None, :]
-    eijkabc = eijab[:, :, None, :, :, None] + eia[None, None, :, None, None, :]
+    t3 = (t3 + t3.transpose(0,1,2,4,5,3) +
+               t3.transpose(0,1,2,5,3,4))
+    eia = foo[:,None] - fvv[None,:]
+    eijab = eia[:,None,:,None] + eia[None,:,None,:]
+    eijkabc = eijab[:,:,None,:,:,None] + eia[None,None,:,None,None,:]
     t3 /= eijkabc
 
     pt1 = 0.25 * lib.einsum('mnef,imnaef->ia', oovv, t3)
@@ -760,7 +925,8 @@ def get_t3p2_amplitude_contribution(t1, t2, eris, return_t3=False):
     pt2 += t2
 
     delta_ccsd_energy = gccsd.energy(None, pt1, pt2, eris) - ccsd_energy
-    logger.info(eom, 'CCSD energy T3[2] correction : %14.8e', delta_ccsd_energy)
+    logger.info(eom, 'CCSD energy T3[2] correction : %14.8e',
+                delta_ccsd_energy)
     if return_t3:
         return delta_ccsd_energy, pt1, pt2, t3
     else:
@@ -819,7 +985,7 @@ class _IMDS:
         self.Wooov = imd.Wooov(t1, t2, eris)
         self.Wovoo = imd.Wovoo(t1, t2, eris)
         if with_t3p2:
-            self.make_ip_t3p2(self):
+            self.make_ip_t3p2(self)
 
         self.made_ip_imds = True
         logger.timer_debug1(self, 'EOM-CCSD IP intermediates', *cput0)
@@ -838,7 +1004,7 @@ class _IMDS:
         self.Wvvvv = imd.Wvvvv(t1, t2, eris)
         self.Wvvvo = imd.Wvvvo(t1, t2, eris,self.Wvvvv)
         if with_t3p2:
-            self.make_ea_t3p2(self):
+            self.make_ea_t3p2(self)
 
         self.made_ea_imds = True
         logger.timer_debug1(self, 'EOM-CCSD EA intermediates', *cput0)
