@@ -299,10 +299,10 @@ def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs,
 
         deltaE = (1. / 12) * lib.einsum('ijkab,ijkab,ijkab', lijkab, rijkab, denom)
         deltaE = deltaE.real
-        logger.info(eom, "Exc. energy, delta energy = %16.12f, %16.12f", ip_eval + deltaE, deltaE)
+        logger.info(eom, "Exc. energy, delta energy = %16.12f, %16.12f",
+                    ip_eval + deltaE, deltaE)
         e_star.append(ip_eval + deltaE)
     return e_star
-
 
 class EOMIP(eom_rccsd.EOMIP):
     matvec = ipccsd_matvec
@@ -611,15 +611,15 @@ def eaccsd_star(eom, eaccsd_evals, eaccsd_evecs, leaccsd_evecs,
         rijabc -= pij(tmp)
 
         if type1:
-            tmp = lib.einsum('mce,mbef->cbf', r2, ovvv)
-            tmp2 = lib.einsum('cbf,jifa->ijabc', tmp, t2)
-            tmp2 = pab(tmp2)
-            rijabc -= pabc(tmp2)
-
             tmp = lib.einsum('mce,kmje->cjk', r2, ooov)
             tmp2 = lib.einsum('cjk,ikab->ijabc', tmp, t2)
             tmp2 = pij(tmp2)
             rijabc += pabc(tmp2)
+
+            tmp = lib.einsum('mce,mbef->cbf', r2, ovvv)
+            tmp2 = lib.einsum('cbf,jifa->ijabc', tmp, t2)
+            tmp2 = pab(tmp2)
+            rijabc -= pabc(tmp2)
 
             tmp = 0.5 * lib.einsum('jfe,kcef->kjc', r2, ovvv)
             tmp2 = lib.einsum('kjc,ikab->ijabc', tmp, t2)
