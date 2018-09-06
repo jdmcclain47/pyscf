@@ -40,9 +40,9 @@ def amplitudes_to_vector_ip(r1, r2):
     nocc = r1.size
     return np.hstack((r1, r2[np.tril_indices(nocc, -1)].ravel()))
 
-def ipccsd_matvec(eom, vector, imds=None, diag=None):
+def ipccsd_matvec(eom, vector, imds=None, diag=None, with_t3p2=False):
     # Ref: Tu, Wang, and Li, J. Chem. Phys. 136, 174102 (2012) Eqs.(8)-(9)
-    if imds is None: imds = eom.make_imds()
+    if imds is None: imds = eom.make_imds(with_t3p2=with_t3p2)
     nocc = eom.nocc
     nmo = eom.nmo
     r1, r2 = vector_to_amplitudes_ip(vector, nmo, nocc)
@@ -53,6 +53,8 @@ def ipccsd_matvec(eom, vector, imds=None, diag=None):
     Hr1 += -0.5*np.einsum('nmie,mne->i', imds.Wooov, r2)
     # Eq. (9)
     Hr2 = -np.einsum('maji,m->ija', imds.Wovoo, r1)
+    if with_t3p2:
+        Hr2 -= lib.einsum('maji,m->ija', self.Wovoo_t3p2, r1)
     if eom.partition == 'mp':
         fock = imds.eris.fock
         foo = fock[:nocc, :nocc]
@@ -77,14 +79,16 @@ def ipccsd_matvec(eom, vector, imds=None, diag=None):
     vector = amplitudes_to_vector_ip(Hr1, Hr2)
     return vector
 
-def lipccsd_matvec(eom, vector, imds=None, diag=None):
-    if imds is None: imds = eom.make_imds()
+def lipccsd_matvec(eom, vector, imds=None, diag=None, with_t3p2=False):
+    if imds is None: imds = eom.make_imds(with_t3p2=with_t3p2)
     nocc = eom.nocc
     nmo = eom.nmo
     r1, r2 = vector_to_amplitudes_ip(vector, nmo, nocc)
 
     Hr1 = -lib.einsum('mi,i->m', imds.Foo, r1)
     Hr1 += -0.5 * lib.einsum('maji,ija->m', imds.Wovoo, r2)
+    if with_t3p2:
+        Hr1 += -0.5 * lib.einsum('maji,ija->m', self.Wovoo_t3p2, r2)
 
     Hr2 = lib.einsum('me,i->mie', imds.Fov, r1)
     Hr2 -= lib.einsum('ie,m->mie', imds.Fov, r1)
@@ -143,6 +147,18 @@ class EOMIP(eom_rccsd.EOMIP):
     get_diag = ipccsd_diag
     ipccsd_star = None
 
+    def gen_matvec(self, imds=None, left=False, **kwargs):
+        with_t3p2 = kwargs.pop('with_t3p2', False)
+        if kwargs:
+            raise TypeError('Unexpected **kwargs: %r' % kwargs)
+        if imds is None: imds = self.make_imds()
+        diag = self.get_diag(imds)
+        if left:
+            matvec = lambda xs: [self.l_matvec(x, imds, diag) for x in xs]
+        else:
+            matvec = lambda xs: [self.matvec(x, imds, diag) for x in xs]
+        return matvec, diag
+
     def vector_to_amplitudes(self, vector, nmo=None, nocc=None):
         if nmo is None: nmo = self.nmo
         if nocc is None: nocc = self.nocc
@@ -156,9 +172,9 @@ class EOMIP(eom_rccsd.EOMIP):
         nvir = self.nmo - nocc
         return nocc + nocc*(nocc-1)/2*nvir
 
-    def make_imds(self, eris=None):
+    def make_imds(self, eris=None, with_t3p2=False):
         imds = _IMDS(self._cc, eris)
-        imds.make_ip()
+        imds.make_ip(with_t3p2=with_t3p2)
         return imds
 
     @property
@@ -194,9 +210,9 @@ def amplitudes_to_vector_ea(r1, r2):
     idx, idy = np.tril_indices(nvir, -1)
     return np.hstack((r1, r2[:,idx,idy].ravel()))
 
-def eaccsd_matvec(eom, vector, imds=None, diag=None):
+def eaccsd_matvec(eom, vector, imds=None, diag=None, with_t3p2=False):
     # Ref: Nooijen and Bartlett, J. Chem. Phys. 102, 3629 (1994) Eqs.(30)-(31)
-    if imds is None: imds = eom.make_imds()
+    if imds is None: imds = eom.make_imds(with_t3p2=with_t3p2)
     nocc = eom.nocc
     nmo = eom.nmo
     nvir = nmo - nocc
@@ -208,6 +224,8 @@ def eaccsd_matvec(eom, vector, imds=None, diag=None):
     Hr1 += 0.5*np.einsum('alcd,lcd->a', imds.Wvovv, r2)
     # Eq. (31)
     Hr2 = np.einsum('abcj,c->jab', imds.Wvvvo, r1)
+    if with_t3p2:
+        Hr2 += lib.einsum('abcj,c->jab', self.Wvvvo_t3p2, r1)
     if eom.partition == 'mp':
         fock = imds.eris.fock
         foo = fock[:nocc,:nocc]
@@ -233,9 +251,9 @@ def eaccsd_matvec(eom, vector, imds=None, diag=None):
     vector = amplitudes_to_vector_ea(Hr1, Hr2)
     return vector
 
-def leaccsd_matvec(eom, vector, imds=None, diag=None):
+def leaccsd_matvec(eom, vector, imds=None, diag=None, with_t3p2=False):
     # Ref: Nooijen and Bartlett, J. Chem. Phys. 102, 3629 (1994) Eqs.(32)-(33)
-    if imds is None: imds = eom.make_imds()
+    if imds is None: imds = eom.make_imds(with_t3p2=with_t3p2)
     nocc = eom.nocc
     nmo = eom.nmo
     nvir = nmo - nocc
@@ -244,6 +262,8 @@ def leaccsd_matvec(eom, vector, imds=None, diag=None):
     # Eq. (32)
     Hr1 = lib.einsum('ac,a->c',imds.Fvv,r1)
     Hr1 += 0.5*lib.einsum('abcj,jab->c',imds.Wvvvo,r2)
+    if with_t3p2:
+        Hr1 += 0.5*lib.einsum('abcj,jab->c', self.Wvvvo_t3p2, r2)
     # Eq. (33)
     Hr2 = lib.einsum('alcd,a->lcd',imds.Wvovv,r1)
     Hr2 += lib.einsum('ld,a->lad',imds.Fov,r1)
@@ -312,6 +332,18 @@ class EOMEA(eom_rccsd.EOMEA):
     get_diag = eaccsd_diag
     eaccsd_star = None
 
+    def gen_matvec(self, imds=None, left=False, **kwargs):
+        with_t3p2 = kwargs.pop('with_t3p2', False)
+        if kwargs:
+            raise TypeError('Unexpected **kwargs: %r' % kwargs)
+        if imds is None: imds = self.make_imds()
+        diag = self.get_diag(imds)
+        if left:
+            matvec = lambda xs: [self.l_matvec(x, imds, diag) for x in xs]
+        else:
+            matvec = lambda xs: [self.matvec(x, imds, diag) for x in xs]
+        return matvec, diag
+
     def vector_to_amplitudes(self, vector, nmo=None, nocc=None):
         if nmo is None: nmo = self.nmo
         if nocc is None: nocc = self.nocc
@@ -325,9 +357,9 @@ class EOMEA(eom_rccsd.EOMEA):
         nvir = self.nmo - nocc
         return nvir + nocc*nvir*(nvir-1)//2
 
-    def make_imds(self, eris=None):
+    def make_imds(self, eris=None, with_t3p2=False):
         imds = _IMDS(self._cc, eris)
-        imds.make_ea()
+        imds.make_ea(with_t3p2=with_t3p2)
         return imds
 
     @property
@@ -486,6 +518,88 @@ class EOMEE(eom_rccsd.EOMEE):
                                        # spin-orbitals as compared to rccsd version
         self._partition = p
 
+def get_t3p2_amplitude_contribution(t1, t2, eris, return_t3=False):
+    """Calculates T1, T2 amplitudes corrected by second-order T3 contribution
+
+    Args:
+        t1 (:obj:`ndarray`):
+            T1 amplitudes.
+        t2 (:obj:`ndarray`):
+            T2 amplitudes from which the T3[2] amplitudes are formed.
+        eris (:obj:`_PhysicistsERIs`):
+            Antisymmetrized electron-repulsion integrals in physicist's notation.
+
+    Returns:
+        delta_ccsd (float):
+            Difference of perturbed and unperturbed CCSD ground-state energy,
+                energy(T1 + T1[2], T2 + T2[2]) - energy(T1, T2)
+        pt1 (:obj:`ndarray`):
+            Perturbatively corrected T1 amplitudes.
+        pt2 (:obj:`ndarray`):
+            Perturbatively corrected T2 amplitudes.
+
+    Reference:
+        D. A. Matthews, J. F. Stanton "A new approach to approximate..."
+            JCP 145, 124102 (2016), Equation 14
+        Shavitt and Bartlett "Many-body Methods in Physics and Chemistry"
+            2009, Equation 10.33
+    """
+    fock = eris.fock
+    nocc, nvir = t1.shape
+
+    fov = fock[:nocc, nocc:]
+    foo = fock[:nocc, :nocc].diagonal()
+    fvv = fock[nocc:, nocc:].diagonal()
+
+    oovv = _cp(eris.oovv)
+    ovvv = _cp(eris.ovvv)
+    ooov = _cp(eris.ooov)
+    vooo = _cp(ooov).conj().transpose(3, 2, 1, 0)
+    vvvo = _cp(ovvv).conj().transpose(3, 2, 1, 0)
+
+    ccsd_energy = gccsd.energy(None, t1, t2, eris)
+
+    # Method 1
+
+    t3 = lib.einsum('bcdk,ijad->ijkabc', vvvo, t2)
+    t3 -= lib.einsum('cmkj,imab->ijkabc', vooo, t2)
+    # P(ijk)
+    t3 = (t3 + t3.transpose(1, 2, 0, 3, 4, 5) +
+                       t3.transpose(2, 0, 1, 3, 4, 5))
+    # P(abc)
+    t3 = (t3 + t3.transpose(0, 1, 2, 4, 5, 3) +
+                       t3.transpose(0, 1, 2, 5, 3, 4))
+    eia = foo[:, None] - fvv[None, :]
+    eijab = eia[:, None, :, None] + eia[None, :, None, :]
+    eijkabc = eijab[:, :, None, :, :, None] + eia[None, None, :, None, None, :]
+    t3 /= eijkabc
+
+    pt1 = 0.25 * lib.einsum('mnef,imnaef->ia', oovv, t3)
+
+    pt2 = lib.einsum('ijmabe,me->ijab', t3, fov)
+    tmp = 0.5 * lib.einsum('ijmaef,mbfe->ijab', t3, ovvv)
+    tmp = tmp - tmp.transpose(0, 1, 3, 2)  # P(ab)
+    pt2 += tmp
+    tmp = - 0.5 * lib.einsum('imnabe,mnje->ijab', t3, ooov)
+    tmp = tmp - tmp.transpose(1, 0, 2, 3)  # P(ij)
+    pt2 += tmp
+
+    eia = foo[:, None] - fvv[None, :]
+    eijab = eia[:, None, :, None] + eia[None, :, None, :]
+
+    pt1 /= eia
+    pt2 /= eijab
+
+    pt1 += t1
+    pt2 += t2
+
+    delta_ccsd_energy = gccsd.energy(None, pt1, pt2, eris) - ccsd_energy
+    logger.info(eom, 'CCSD energy T3[2] correction : %14.8e', delta_ccsd_energy)
+    if return_t3:
+        return delta_ccsd_energy, pt1, pt2, t3
+    else:
+        return delta_ccsd_energy, pt1, pt2
+
 class _IMDS:
     # Exactly the same as RCCSD IMDS except
     # -- rintermediates --> gintermediates
@@ -520,7 +634,7 @@ class _IMDS:
         logger.timer_debug1(self, 'EOM-CCSD shared intermediates', *cput0)
         return self
 
-    def make_ip(self):
+    def make_ip(self, with_t3p2=False):
         if not self._made_shared:
             self._make_shared()
 
@@ -532,12 +646,16 @@ class _IMDS:
         self.Woooo = imd.Woooo(t1, t2, eris)
         self.Wooov = imd.Wooov(t1, t2, eris)
         self.Wovoo = imd.Wovoo(t1, t2, eris)
+        if with_t3p2:
+            t3 = get_t3p2_amplitude_contribution(eom, t1, t2, eris=eris,
+                                                 return_t3=True)[-1]
+            self.Wovoo_t3 = imd.Wovoo_t3(t1, t2, eris, t3=t3)
 
         self.made_ip_imds = True
         logger.timer_debug1(self, 'EOM-CCSD IP intermediates', *cput0)
         return self
 
-    def make_ea(self):
+    def make_ea(self, with_t3p2=False):
         if not self._made_shared:
             self._make_shared()
 
@@ -549,6 +667,10 @@ class _IMDS:
         self.Wvovv = imd.Wvovv(t1, t2, eris)
         self.Wvvvv = imd.Wvvvv(t1, t2, eris)
         self.Wvvvo = imd.Wvvvo(t1, t2, eris,self.Wvvvv)
+        if with_t3p2:
+            t3 = get_t3p2_amplitude_contribution(eom, t1, t2, eris=eris,
+                                                 return_t3=True)[-1]
+            self.Wvvvo_t3 = imd.Wvvvo_t3(t1, t2, eris, t3=t3)
 
         self.made_ea_imds = True
         logger.timer_debug1(self, 'EOM-CCSD EA intermediates', *cput0)
