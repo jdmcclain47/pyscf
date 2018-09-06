@@ -41,6 +41,7 @@ def amplitudes_to_vector_ip(r1, r2):
     return np.hstack((r1, r2[np.tril_indices(nocc, -1)].ravel()))
 
 def ipccsd_matvec(eom, vector, imds=None, diag=None, with_t3p2=False):
+    '''IP-CCSD right eigenvector equation'''
     # Ref: Tu, Wang, and Li, J. Chem. Phys. 136, 174102 (2012) Eqs.(8)-(9)
     if imds is None: imds = eom.make_imds(with_t3p2=with_t3p2)
     nocc = eom.nocc
@@ -140,12 +141,174 @@ def ipccsd_diag(eom, imds=None):
     vector = amplitudes_to_vector_ip(Hr1, Hr2)
     return vector
 
+def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs,
+                eris=None, type1=False, type2=False):
+    """Calculates perturbative correction IP-CCSD*
+
+    Args:
+        eom (:obj:`EOMIP`):
+            Object containing coupled-cluster results.
+        ipccsd_evals (array-like):
+            Right EOM-IP-CCSD eigenvalues; should be same as left eigenvalues.
+        ipccsd_evecs (array-like):
+            List of right EOM-IP-CCSD eigenvectors.
+        lipccsd_evecs (array-like):
+            List of left EOM-IP-CCSD eigenvectors.
+        eris (:obj:`_PhysicistsERIs`):
+            Antisymmetrized electron-repulsion integrals in physicist's notation.
+        type1 (bool):
+            Include type1 terms (defined in ref.) in perturbation.
+        type2 (bool):
+            Include type2 terms (defined in ref.) in perturbation.
+
+    Returns:
+        e_star (list of float):
+            The IP-CCSD* energy.
+
+    Notes:
+        The user should check to make sure the right and left eigenvalues
+        before running the perturbative correction.
+
+        The 2hp right amplitudes are assumed to be of the form s^{a }_{ij}, i.e.
+        the (ia) indices are coupled while the left are assumed to be of the form
+        s^{ b}_{ij}, i.e. the (jb) indices are coupled.
+
+    Reference:
+        Saeh, Stanton "...energy surfaces of radicals" JCP 111, 8275 (1999)
+
+    """
+    assert (eom.partition == None)
+    if eris is None:
+        eris = eom._cc.ao2mo()
+    assert(isinstance(eris, gccsd._PhysicistsERIs))
+    t1, t2 = eom._cc.t1, eom._cc.t2
+    fock = eris.fock
+    nocc = eom.nocc
+    nmo = eom.nmo
+    nvir = nmo - nocc
+
+    fov = fock[:nocc, nocc:]
+    foo = fock[:nocc, :nocc].diagonal()
+    fvv = fock[nocc:, nocc:].diagonal()
+
+    oovv = _cp(eris.oovv)
+    ovvv = _cp(eris.ovvv)
+    ovov = _cp(eris.ovov)
+    ovvo = -_cp(eris.ovov).transpose(0,1,3,2)
+    ooov = _cp(eris.ooov)
+    vooo = _cp(ooov).conj().transpose(3,2,1,0)
+    vvvo = _cp(ovvv).conj().transpose(3,2,1,0)
+    oooo = _cp(eris.oooo)
+
+    # Create denominator
+    eijk = foo[:, None, None] + foo[None, :, None] + foo[None, None, :]
+    eab = fvv[:, None] + fvv[None, :]
+    eijkab = eijk[:, :, :, None, None] - eab[None, None, None, :, :]
+
+    # Permutation operators
+    def pijk(tmp):
+        '''P(ijk)'''
+        return tmp + tmp.transpose(1,2,0,3,4) + tmp.transpose(2,0,1,3,4)
+
+    def pab(tmp):
+        '''P(ab)'''
+        return tmp - tmp.transpose(0,1,2,4,3)
+
+    def pij(tmp):
+        '''P(ij)'''
+        return tmp - tmp.transpose(1,0,2,3,4)
+
+    ipccsd_evecs = np.array(ipccsd_evecs)
+    lipccsd_evecs = np.array(lipccsd_evecs)
+    e_star = []
+    for ip_eval, ip_evec, ip_levec in zip(ipccsd_evals, ipccsd_evecs, lipccsd_evecs):
+        # Enforcing <L|R> = 1
+        l1, l2 = vector_to_amplitudes_ip(ip_levec, nmo, nocc)
+        r1, r2 = vector_to_amplitudes_ip(ip_evec, nmo, nocc)
+        ldotr = np.dot(l1, r1) + 0.5 * np.dot(l2.ravel(), r2.ravel())
+
+        logger.info(eom, 'Left-right amplitude overlap : %14.8e', ldotr)
+        if abs(ldotr) < 1e-7:
+            logger.warn(eom, 'Small %s left-right amplitude overlap. Results '
+                             'may be inaccurate.', ldotr)
+
+        l1 /= ldotr
+        l2 /= ldotr
+
+        # Denominator + eigenvalue(IP-CCSD)
+        denom = eijkab + ip_eval
+        denom = 1. / denom
+
+        tmp = lib.einsum('ijab,k->ijkab', oovv, l1)
+        lijkab = pijk(tmp)
+        tmp = -lib.einsum('jima,mkb->ijkab', ooov, l2)
+        tmp = pijk(tmp)
+        lijkab += pab(tmp)
+        tmp = lib.einsum('ieab,jke->ijkab', ovvv, l2)
+        lijkab += pijk(tmp)
+
+        tmp = lib.einsum('mbke,m->bke', ovov, r1)
+        tmp = lib.einsum('bke,ijae->ijkab', tmp, t2)
+        tmp = pijk(tmp)
+        rijkab = -pab(tmp)
+        tmp = lib.einsum('mnjk,n->mjk', oooo, r1)
+        tmp = lib.einsum('mjk,imab->ijkab', tmp, t2)
+        rijkab += pijk(tmp)
+        tmp = lib.einsum('amij,mkb->ijkab', vooo, r2)
+        tmp = pijk(tmp)
+        rijkab -= pab(tmp)
+        tmp = lib.einsum('baei,jke->ijkab', vvvo, r2)
+        rijkab += pijk(tmp)
+
+        if type1:
+            tmp = lib.einsum('mke,mbef->kbf', r2, ovvv)
+            tmp2 = lib.einsum('kbf,ijaf->ijkab', tmp, t2)
+            tmp2 = pab(tmp2)
+            rijkab += pijk(tmp2)
+
+            tmp = lib.einsum('mke,nmje->njk', r2, ooov)
+            tmp2 = lib.einsum('njk,inab->ijkab', tmp, t2)
+            tmp2 = pij(tmp2)
+            rijkab -= pijk(tmp2)
+
+            tmp = 0.5 * lib.einsum('mnb,nmke->bek', r2, ooov)
+            tmp2 = lib.einsum('bek,ijae->ijkab', tmp, t2)
+            tmp2 = pab(tmp2)
+            rijkab += pijk(tmp2)
+
+        if type2:
+            tmp = lib.einsum('imae,mbef->iabf', t2, ovvv)
+            tmp2 = lib.einsum('iabf,jkf->ijkab', tmp, r2)
+            tmp2 = pab(tmp2)
+            rijkab += pijk(tmp2)
+
+            tmp = lib.einsum('nkb,nmje->jkmbe', r2, ooov)
+            tmp = tmp - tmp.transpose(1,0,2,3,4)
+            tmp2 = lib.einsum('imae,jkmbe->ijkab', t2, tmp)
+            tmp2 = pab(tmp2)
+            rijkab -= pijk(tmp2)
+
+            tmp = 0.5 * lib.einsum('ijfe,maef->iajm', t2, ovvv)
+            tmp2 = lib.einsum('iajm,mkb->ijkab', tmp, r2)
+            tmp2 = pab(tmp2)
+            rijkab -= pijk(tmp2)
+
+            tmp = 0.5 * lib.einsum('nmab,nmie->iabe', t2, ooov)
+            tmp2 = lib.einsum('iabe,jke->ijkab', tmp, r2)
+            rijkab += pijk(tmp2)
+
+        deltaE = (1. / 12) * lib.einsum('ijkab,ijkab,ijkab', lijkab, rijkab, denom)
+        deltaE = deltaE.real
+        logger.info(eom, "Exc. energy, delta energy = %16.12f, %16.12f", ip_eval + deltaE, deltaE)
+        e_star.append(ip_eval + deltaE)
+    return e_star
+
 
 class EOMIP(eom_rccsd.EOMIP):
     matvec = ipccsd_matvec
     l_matvec = lipccsd_matvec
     get_diag = ipccsd_diag
-    ipccsd_star = None
+    ipccsd_star = ipccsd_star
 
     def gen_matvec(self, imds=None, left=False, **kwargs):
         with_t3p2 = kwargs.pop('with_t3p2', False)
@@ -172,8 +335,8 @@ class EOMIP(eom_rccsd.EOMIP):
         nvir = self.nmo - nocc
         return nocc + nocc*(nocc-1)/2*nvir
 
-    def make_imds(self, eris=None, with_t3p2=False):
-        imds = _IMDS(self._cc, eris)
+    def make_imds(self, t1=None, t2=None, eris=None, with_t3p2=False):
+        imds = _IMDS(self._cc, t1, t2, eris)
         imds.make_ip(with_t3p2=with_t3p2)
         return imds
 
@@ -191,6 +354,7 @@ class EOMIP(eom_rccsd.EOMIP):
             raise NotImplementedError  # full partition isn't working properly for
                                        # spin-orbitals as compared to rccsd version
         self._partition = p
+
 
 ########################################
 # EOM-EA-CCSD
@@ -211,6 +375,7 @@ def amplitudes_to_vector_ea(r1, r2):
     return np.hstack((r1, r2[:,idx,idy].ravel()))
 
 def eaccsd_matvec(eom, vector, imds=None, diag=None, with_t3p2=False):
+    '''EA-CCSD right eigenvector equation'''
     # Ref: Nooijen and Bartlett, J. Chem. Phys. 102, 3629 (1994) Eqs.(30)-(31)
     if imds is None: imds = eom.make_imds(with_t3p2=with_t3p2)
     nocc = eom.nocc
@@ -518,6 +683,7 @@ class EOMEE(eom_rccsd.EOMEE):
                                        # spin-orbitals as compared to rccsd version
         self._partition = p
 
+
 def get_t3p2_amplitude_contribution(t1, t2, eris, return_t3=False):
     """Calculates T1, T2 amplitudes corrected by second-order T3 contribution
 
@@ -605,11 +771,15 @@ class _IMDS:
     # -- rintermediates --> gintermediates
     # -- Loo, Lvv, cc_Fov --> Foo, Fvv, Fov
     # -- One less 2-virtual intermediate
-    def __init__(self, cc, eris=None):
+    def __init__(self, cc, t1=None, t2=None, eris=None):
         self.verbose = cc.verbose
         self.stdout = cc.stdout
-        self.t1 = cc.t1
-        self.t2 = cc.t2
+        if t1 is None:
+            t1 = cc.t1
+        self.t1 = t1
+        if t2 is None:
+            t2 = cc.t2
+        self.t2 = t2
         if eris is None:
             eris = cc.ao2mo()
         self.eris = eris
@@ -617,6 +787,8 @@ class _IMDS:
         self.made_ip_imds = False
         self.made_ea_imds = False
         self.made_ee_imds = False
+        self.made_ip_imds_t3p2 = False
+        self.made_ea_imds_t3p2 = False
 
     def _make_shared(self):
         cput0 = (time.clock(), time.time())
@@ -647,9 +819,7 @@ class _IMDS:
         self.Wooov = imd.Wooov(t1, t2, eris)
         self.Wovoo = imd.Wovoo(t1, t2, eris)
         if with_t3p2:
-            t3 = get_t3p2_amplitude_contribution(eom, t1, t2, eris=eris,
-                                                 return_t3=True)[-1]
-            self.Wovoo_t3 = imd.Wovoo_t3(t1, t2, eris, t3=t3)
+            self.make_ip_t3p2(self):
 
         self.made_ip_imds = True
         logger.timer_debug1(self, 'EOM-CCSD IP intermediates', *cput0)
@@ -668,9 +838,7 @@ class _IMDS:
         self.Wvvvv = imd.Wvvvv(t1, t2, eris)
         self.Wvvvo = imd.Wvvvo(t1, t2, eris,self.Wvvvv)
         if with_t3p2:
-            t3 = get_t3p2_amplitude_contribution(eom, t1, t2, eris=eris,
-                                                 return_t3=True)[-1]
-            self.Wvvvo_t3 = imd.Wvvvo_t3(t1, t2, eris, t3=t3)
+            self.make_ea_t3p2(self):
 
         self.made_ea_imds = True
         logger.timer_debug1(self, 'EOM-CCSD EA intermediates', *cput0)
@@ -699,6 +867,38 @@ class _IMDS:
         logger.timer(self, 'EOM-CCSD EE intermediates', *cput0)
         return self
 
+    def make_ip_t3p2(self):
+        '''Create intermediates for EOM-CCSD based on T3[2] amplitudes.'''
+        t3 = get_t3p2_amplitude_contribution(eom, t1, t2, eris=eris,
+                                             return_t3=True)[-1]
+        cput0 = (time.clock(), time.time())
+
+        t1, t2, eris = self.t1, self.t2, self.eris
+
+        if not self.made_ip_imds_t3p2:
+            self.Wovoo_t3p2 = imd.Wovoo_t3p2(t1, t2, eris, t3=t3)
+
+        self.made_ip_imds_t3p2 = True
+        logger.timer_debug1(self, 'EOM-CCSD IP T3[2] intermediates', *cput0)
+        return self
+
+    def make_ea_t3p2(self):
+        '''Create intermediates for EOM-CCSD based on T3[2] amplitudes.'''
+        t3 = get_t3p2_amplitude_contribution(eom, t1, t2, eris=eris,
+                                             return_t3=True)[-1]
+        cput0 = (time.clock(), time.time())
+
+        t1, t2, eris = self.t1, self.t2, self.eris
+
+        if not self.made_ea_imds_t3p2:
+            self.Wvvvo_t3p2 = imd.Wvvvo_t3p2(t1, t2, eris, t3=t3)
+
+        self.made_ea_imds_t3p2 = True
+        logger.timer_debug1(self, 'EOM-CCSD EA T3[2] intermediates', *cput0)
+        return self
+
+def _cp(a):
+    return np.array(a, copy=False, order='C')
 
 if __name__ == '__main__':
     from pyscf import scf
