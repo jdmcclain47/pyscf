@@ -95,6 +95,11 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(e[1], 0.42789089871467728, 5)
         self.assertAlmostEqual(e[2], 0.50226873136932748, 5)
 
+        e,v = myeom.ipccsd(nroots=3, left=True)
+        self.assertAlmostEqual(e[0], 0.42789089871467728, 5)
+        self.assertAlmostEqual(e[1], 0.42789089871467728, 5)
+        self.assertAlmostEqual(e[2], 0.50226873136932748, 5)
+
     def test_ipccsd_koopmans(self):
         e,v = mycc.ipccsd(nroots=3, koopmans=True)
         self.assertAlmostEqual(e[0], 0.42789089871467728, 5)
@@ -106,6 +111,17 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(e[1], 0.42789089871467728, 5)
         self.assertAlmostEqual(e[2], 0.50226873136932748, 5)
 
+    def test_ipccsd_partition(self):
+        e,v = mycc.ipccsd(nroots=3, partition='mp')
+        self.assertAlmostEqual(e[0], 0.42181947976275236, 6)
+        self.assertAlmostEqual(e[1], 0.42181947976275236, 6)
+        self.assertAlmostEqual(e[2], 0.49645920761415335, 6)
+
+        e,v = mycc.ipccsd(nroots=3, partition='mp', left=True)
+        self.assertAlmostEqual(e[0], 0.42181947976275236, 6)
+        self.assertAlmostEqual(e[1], 0.42181947976275236, 6)
+        self.assertAlmostEqual(e[2], 0.49645920761415335, 6)
+
 
     def test_eaccsd(self):
         e,v = mycc.eaccsd(nroots=1)
@@ -113,6 +129,11 @@ class KnownValues(unittest.TestCase):
 
         myeom = eom_gccsd.EOMEA(mycc)
         e,v = myeom.eaccsd(nroots=3)
+        self.assertAlmostEqual(e[0], 0.19050592141957523, 6)
+        self.assertAlmostEqual(e[1], 0.19050592141957523, 6)
+        self.assertAlmostEqual(e[2], 0.28345228596676159, 6)
+
+        e,v = myeom.eaccsd(nroots=3, left=True)
         self.assertAlmostEqual(e[0], 0.19050592141957523, 6)
         self.assertAlmostEqual(e[1], 0.19050592141957523, 6)
         self.assertAlmostEqual(e[2], 0.28345228596676159, 6)
@@ -127,6 +148,17 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(e[0], 0.19050592141957523, 6)
         self.assertAlmostEqual(e[1], 0.19050592141957523, 6)
         self.assertAlmostEqual(e[2], 0.28345228596676159, 6)
+
+    def test_eaccsd_partition(self):
+        e,v = mycc.eaccsd(nroots=5, partition='mp')
+        self.assertAlmostEqual(e[0], 0.19336072679618030, 6)
+        self.assertAlmostEqual(e[2], 0.28722743859375971, 6)
+        self.assertAlmostEqual(e[4], 0.90848690845068480, 6)
+
+        e,v = mycc.eaccsd(nroots=5, partition='mp', left=True)
+        self.assertAlmostEqual(e[0], 0.19336072679618030, 6)
+        self.assertAlmostEqual(e[2], 0.28722743859375971, 6)
+        self.assertAlmostEqual(e[4], 0.90848690845068480, 6)
 
 
     def test_eeccsd_high_cost(self):
