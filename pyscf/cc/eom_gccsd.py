@@ -932,6 +932,132 @@ def get_t3p2_amplitude_contribution(t1, t2, eris, return_t3=False):
     else:
         return delta_ccsd_energy, pt1, pt2
 
+def _get_t3p2_amplitude_contribution(eom, t1, t2, eris, inplace=False):
+    """Calculates T1, T2 amplitudes corrected by second-order T3 contribution
+
+    Args:
+        eom (:obj:`EOMIP`):
+            Object containing coupled-cluster results.
+        t1 (:obj:`ndarray`):
+            T1 amplitudes.
+        t2 (:obj:`ndarray`):
+            T2 amplitudes from which the T3[2] amplitudes are formed.
+        eris (:obj:`_PhysicistsERIs`):
+            Antisymmetrized electron-repulsion integrals in physicist's notation.
+        inplace (bool):
+            Whether to change the t1, t2 inplace.  Will overwrite input.
+
+    Returns:
+        delta_ccsd (float):
+            Difference of perturbed and unperturbed CCSD ground-state energy,
+                energy(T1 + T1[2], T2 + T2[2]) - energy(T1, T2)
+        pt1 (:obj:`ndarray`):
+            Perturbatively corrected T1 amplitudes.
+        pt2 (:obj:`ndarray`):
+            Perturbatively corrected T2 amplitudes.
+
+    Reference:
+        D. A. Matthews, J. F. Stanton "A new approach to approximate..."
+            JCP 145, 124102 (2016), Equation 14
+        Shavitt and Bartlett "Many-body Methods in Physics and Chemistry"
+            2009, Equation 10.33
+    """
+    fock = eris.fock
+    nocc = eom.nocc
+    nmo = eom.nmo
+    nvir = nmo - nocc
+
+    fov = fock[:nocc, nocc:]
+    foo = fock[:nocc, :nocc].diagonal()
+    fvv = fock[nocc:, nocc:].diagonal()
+
+    oovv = _cp(eris.oovv)
+    ovvv = _cp(eris.ovvv)
+    ooov = _cp(eris.ooov)
+    vooo = _cp(ooov).conj().transpose(3, 2, 1, 0)
+    vvvo = _cp(ovvv).conj().transpose(3, 2, 1, 0)
+
+    ccsd_energy = gccsd.energy(None, t1, t2, eris)
+
+    if inplace:
+        pt1 = t1
+        pt2 = t2
+    else:
+        pt1 = t1.copy()
+        pt2 = t2.copy()
+
+    eijk = foo[:, None, None] + foo[None, :, None] + foo[None, None, :]
+    eia = foo[:, None] - fvv[None, :]
+    eijab = eia[:, None, :, None] + eia[None, :, None, :]
+
+    from pyscf.lib.misc import tril_product
+    for a, b, c in tril_product(range(nvir), repeat=3):
+        tmp_ijk  = lib.einsum('dk,ijd->ijk', vvvo[b, c], t2[:, :, a])
+        tmp_ijk -= lib.einsum('mkj,im->ijk', vooo[c], t2[:, :, a, b])
+
+        # a -> b -> c
+        tmp_ijk += lib.einsum('dk,ijd->ijk', vvvo[c, a], t2[:, :, b])
+        tmp_ijk -= lib.einsum('mkj,im->ijk', vooo[a], t2[:, :, b, c])
+
+        # a -> c -> b
+        tmp_ijk += lib.einsum('dk,ijd->ijk', vvvo[a, b], t2[:, :, c])
+        tmp_ijk -= lib.einsum('mkj,im->ijk', vooo[b], t2[:, :, c, a])
+
+        # P(ijk)
+        tmp_ijk = (tmp_ijk + tmp_ijk.transpose(1, 2, 0) +
+                             tmp_ijk.transpose(2, 0, 1))
+        eijkabc = eijk - fvv[a] - fvv[b] - fvv[c]
+        tmp_ijk /= eijkabc
+
+        bc_fac = 1.
+        if b != c:
+            bc_fac = 2.
+
+        if b <= c:
+            pt1[:, a] += (bc_fac * 0.25 * lib.einsum('ijk,jk->i', tmp_ijk, oovv[:, :, b, c]) /
+                          eia[:, a])
+            pt2[:, :, a, b] += (bc_fac * lib.einsum('ijk,kc->ij', tmp_ijk, fov) /
+                                eijab[:, :, a, b])
+
+            # The following is implemented using the following change of variables in order to
+            # reuse tmp_ijk [m, e, f, b] -> [k, b, c, d], then apply permutation operator
+            #         P(ab) ('ijmaef,mbfe->ijab') = ('ijkabc,kdcb->ijad') - ('ijkabc,kdcb->ijda')
+            pt2[:, :, a, :] += bc_fac * 0.5 * lib.einsum('ijk,kd->ijd', tmp_ijk,
+                    ovvv[:, :, c, b]) / eijab[:, :, a, :]
+            pt2[:, :, :, a] -= bc_fac * 0.5 * lib.einsum('ijk,kd->ijd', tmp_ijk,
+                    ovvv[:, :, c, b]) / eijab[:, :, :, a]
+
+        if a <= b:
+            # The following is implemented using the following change of variables in order to
+            # reuse tmp_ijk [m, n, e, j] -> [j, k, c, l], then apply permutation operator
+            #         P(ij) ('imnabe,mnje->ijab') = ('ijkabc,jklc->ilab') - ('ijkabc,jklc->liab')
+            tmp = 0.5 * lib.einsum('ijk,jkl->il', tmp_ijk, ooov[:, :, :, c]) / eijab[:, :, a, b]
+            pt2[:, :, a, b] -= (tmp - tmp.transpose(1,0))
+            if a != b:
+                pt2[:, :, b, a] += (tmp - tmp.transpose(1,0))
+            #tmp = 0.5 * lib.einsum('ijk,jkl->li', tmp_ijk, ooov[:, :, :, c]) / eijab[:, :, a, b]
+            #pt2[:, :, a, b] += tmp
+            #if a != b:
+            #    pt2[:, :, b, a] -= tmp
+
+    # FIXME: delete this.. just temporary
+    t3 = lib.einsum('bcdk,ijad->ijkabc', vvvo, t2)
+    t3 -= lib.einsum('cmkj,imab->ijkabc', vooo, t2)
+    # P(ijk)
+    t3 = (t3 + t3.transpose(1,2,0,3,4,5) +
+               t3.transpose(2,0,1,3,4,5))
+    # P(abc)
+    t3 = (t3 + t3.transpose(0,1,2,4,5,3) +
+               t3.transpose(0,1,2,5,3,4))
+    eia = foo[:,None] - fvv[None,:]
+    eijab = eia[:,None,:,None] + eia[None,:,None,:]
+    eijkabc = eijab[:,:,None,:,:,None] + eia[None,None,:,None,None,:]
+    t3 /= eijkabc
+
+    delta_ccsd_energy = gccsd.energy(None, pt1, pt2, eris) - ccsd_energy
+    logger.info(eom, 'CCSD energy T3[2] correction : %14.8e', delta_ccsd_energy)
+    return delta_ccsd_energy, pt1, pt2, t3
+
 class _IMDS:
     # Exactly the same as RCCSD IMDS except
     # -- rintermediates --> gintermediates
