@@ -100,7 +100,7 @@ class EOM(lib.StreamObject):
         self.max_space = getattr(__config__, 'eom_rccsd_EOM_max_space', 20)
         self.max_cycle = getattr(__config__, 'eom_rccsd_EOM_max_cycle', cc.max_cycle)
         self.conv_tol = getattr(__config__, 'eom_rccsd_EOM_conv_tol', cc.conv_tol)
-        self.partition = getattr(__config__, 'eom_rccsd_EOM_partition', None)
+        self._partition = getattr(__config__, 'eom_rccsd_EOM_partition', None)
 
 ##################################################
 # don't modify the following attributes, they are not input options
@@ -123,6 +123,16 @@ class EOM(lib.StreamObject):
                     self.max_memory, lib.current_memory()[0])
         return self
 
+    @property
+    def partition(self):
+        return self._partition
+
+    @partition.setter
+    def partition(self, p):
+        if p is not None:
+            p = p.lower()
+            assert p in ['mp','full']
+        self._partition = p
 
 ########################################
 # EOM-IP-CCSD
@@ -367,6 +377,9 @@ class EOMIP(EOM):
                 g[self.nocc-n-1] = 1.0
                 guess.append(g)
         else:
+            if diag is None:
+                imds = self.make_imds()
+                diag = self.get_diag(imds)
             idx = diag.argsort()[:nroots]
             for i in idx:
                 g = np.zeros(int(size), dtype)
@@ -647,6 +660,9 @@ class EOMEA(EOM):
                 g[n] = 1.0
                 guess.append(g)
         else:
+            if diag is None:
+                imds = self.make_imds()
+                diag = self.get_diag(imds)
             idx = diag.argsort()[:nroots]
             for i in idx:
                 g = np.zeros(size, dtype)
@@ -1291,6 +1307,9 @@ class EOMEE(EOM):
             nvir = self.nmo - nocc
             idx = diag[:nocc*nvir].argsort()
         else:
+            if diag is None:
+                imds = self.make_imds()
+                diag = self.get_diag(imds)
             idx = diag.argsort()
 
         size = self.vector_size()
@@ -1329,6 +1348,8 @@ class EOMEESinglet(EOMEE):
     matvec = eeccsd_matvec_singlet
 
     def gen_matvec(self, imds=None, diag=None, **kwargs):
+        if kwargs:
+            raise TypeError('Unexpected **kwargs: %r' % kwargs)
         if imds is None: imds = self.make_imds()
         if diag is None: diag = self.get_diag(imds)[0]
         matvec = lambda xs: [self.matvec(x, imds) for x in xs]
@@ -1355,6 +1376,8 @@ class EOMEETriplet(EOMEE):
     matvec = eeccsd_matvec_triplet
 
     def gen_matvec(self, imds=None, diag=None, **kwargs):
+        if kwargs:
+            raise TypeError('Unexpected **kwargs: %r' % kwargs)
         if imds is None: imds = self.make_imds()
         if diag is None: diag = self.get_diag(imds)[1]
         matvec = lambda xs: [self.matvec(x, imds) for x in xs]
@@ -1381,6 +1404,8 @@ class EOMEESpinFlip(EOMEE):
     matvec = eeccsd_matvec_sf
 
     def gen_matvec(self, imds=None, diag=None, **kwargs):
+        if kwargs:
+            raise TypeError('Unexpected **kwargs: %r' % kwargs)
         if imds is None: imds = self.make_imds()
         if diag is None: diag = self.get_diag(imds)[2]
         matvec = lambda xs: [self.matvec(x, imds) for x in xs]
