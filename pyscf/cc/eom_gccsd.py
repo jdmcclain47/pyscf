@@ -337,6 +337,7 @@ class EOMIP(eom_rccsd.EOMIP):
     matvec = ipccsd_matvec
     l_matvec = lipccsd_matvec
     get_diag = ipccsd_diag
+    _ipccsd_star = _ipccsd_star
     _get_star_energy = _ipccsd_star  # calls star w/ explicit left/right amplitudes
 
     def vector_to_amplitudes(self, vector, nmo=None, nocc=None):
@@ -705,6 +706,7 @@ class EOMEA(eom_rccsd.EOMEA):
     matvec = eaccsd_matvec
     l_matvec = leaccsd_matvec
     get_diag = eaccsd_diag
+    _eaccsd_star = _eaccsd_star
     _get_star_energy = _eaccsd_star  # calls star w/ explicit left/right amplitudes
 
     def vector_to_amplitudes(self, vector, nmo=None, nocc=None):
@@ -844,11 +846,9 @@ class EOMEE(eom_rccsd.EOMEE):
     matvec = eeccsd_matvec
     get_diag = eeccsd_diag
 
-    def gen_matvec(self, imds=None, **kwargs):
-        if kwargs:
-            raise TypeError('Unexpected **kwargs: %r' % kwargs)
+    def gen_matvec(self, imds=None, diag=None, **kwargs):
         if imds is None: imds = self.make_imds()
-        diag = self.get_diag(imds)
+        if diag is None: diag = self.get_diag(imds)
         matvec = lambda xs: [self.matvec(x, imds) for x in xs]
         return matvec, diag
 
@@ -1113,15 +1113,11 @@ class _IMDS:
     # -- rintermediates --> gintermediates
     # -- Loo, Lvv, cc_Fov --> Foo, Fvv, Fov
     # -- One less 2-virtual intermediate
-    def __init__(self, cc, t1=None, t2=None, eris=None):
+    def __init__(self, cc, eris=None):
         self.verbose = cc.verbose
         self.stdout = cc.stdout
-        if t1 is None:
-            t1 = cc.t1
-        self.t1 = t1
-        if t2 is None:
-            t2 = cc.t2
-        self.t2 = t2
+        self.t1 = cc.t1
+        self.t2 = cc.t2
         if eris is None:
             eris = cc.ao2mo()
         self.eris = eris

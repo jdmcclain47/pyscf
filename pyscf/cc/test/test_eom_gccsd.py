@@ -132,7 +132,7 @@ class KnownValues(unittest.TestCase):
         '''
         mol.basis = 'dzp'
         mol.verbose = 7
-        #mol.output = '/dev/null'
+        mol.output = '/dev/null'
         mol.charge = -1
         #mol.spin = 1
         mol.build()
@@ -142,7 +142,7 @@ class KnownValues(unittest.TestCase):
         imds = myeom.make_imds()
         e,v = myeom.ipccsd(nroots=3, imds=imds)
         e,lv = myeom.ipccsd(nroots=3, left=True, imds=imds)
-        myeom.ipccsd_star(e, v, lv, eris=imds.eris, type1=True)
+        myeom._ipccsd_star(e, v, lv, eris=imds.eris, type1=True)
 
     def test_eaccsd(self):
         e,v = mycc.eaccsd(nroots=1)
@@ -167,6 +167,7 @@ class KnownValues(unittest.TestCase):
                 [1, [0.000000000000000,  1.430522735894536,  0.985125550040314]]]
         mol_n2.unit = 'B'
         mol_n2.basis = '3-21g'
+        mol_n2.output = '/dev/null'
         mol_n2.verbose = 7
         mol_n2.build()
         mol.conv_tol = 1e-12
