@@ -160,17 +160,3 @@ def Wvvvo(t1, t2, eris, _Wvvvv=None):
         _Wvvvv = Wvvvv(t1, t2, eris)
     Wabei += einsum('abef,if->abei', _Wvvvv, t1)
     return Wabei
-
-def Wovoo_t3p2(t1, t2, eris, t3=None):
-    if t3:
-        Wkaji = 0.5*lib.einsum('jniefa,knef->kaji', t3, imds.eris.oovv)
-    else:
-        raise ValueError
-    return Wkaji
-
-def Wvvvo_t3p2(t1, t2, eris, t3=None):
-    if t3:
-        Wabej = 0.5*lib.einsum('injafb,inef->abej', t3, imds.eris.oovv)
-    else:
-        raise ValueError
-    return Wabej
