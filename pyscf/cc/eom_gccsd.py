@@ -332,97 +332,12 @@ def _ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs,
         e_star.append(ip_eval + deltaE)
     return e_star
 
-def _check_left_right_eigensystem(right_converged, right_evals, right_evecs,
-                                  left_converged, left_evals, left_evecs):
-    '''Ensure left and right eigenvalues match up.'''
-    return right_evals, right_evecs, left_evecs
-
-def _perturbed_excited_wrapper(eom, nroots=1, koopmans=False, right_guess=None,
-                               left_guess=None, eris=None, imds=None, type1=False,
-                               type2=False, with_t3p2=True, with_t3p2_imds=True):
-    '''Wrapper for running perturbative excited-states that require both left
-    and right amplitudes.'''
-    kernel = eom_rccsd.kernel
-    if imds is None:
-        imds = eom.make_imds(with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
-
-    # Right eigenvectors
-    r_converged, r_e, r_v = \
-               kernel(eom, nroots, koopmans=koopmans, guess=right_guess, left=False,
-                      eris=eris, imds=imds, with_t3p2=with_t3p2,
-                      copy_amps_t3p2=True, with_t3p2_imds=with_t3p2_imds)
-    # Left eigenvectors
-    l_converged, l_e, l_v = \
-               kernel(eom, nroots, koopmans=koopmans, guess=right_guess, left=True,
-                      eris=eris, imds=imds, with_t3p2=with_t3p2,
-                      copy_amps_t3p2=True, with_t3p2_imds=with_t3p2_imds)
-
-    e, r_v, l_v = _check_left_right_eigensystem(r_converged, r_e, r_v, l_converged, l_e, l_v)
-    e_t_a_star = eom._get_star_energy(e, r_v, l_v, eris=imds.eris, type1=type1, type2=type2)
-    return e_t_a_star
-
-def kernel_t_a_star(eom, nroots=1, koopmans=False, right_guess=None,
-                    left_guess=None, eris=None, imds=None, type1=False,
-                    type2=False):
-    """Calculates perturbative correction IP-CCSD* using T3[2]-corrected T1/T2.
-
-    Returns:
-        e_t_a_star (array-like of float):
-            The IP-CCSD(T)_a* excitation energies.
-
-    Notes:
-        If either `with_t3p2` or `with_t3p2_imds` is False, then this does not
-        correspond to the ipccsd_t_a_star as it is defined in:
-
-        D. A. Matthews, J. F. Stanton "A new approach to approximate..."
-            JCP 145, 124102 (2016), Equation 14
-    """
-    return _perturbed_excited_wrapper(eom, nroots=1, koopmans=koopmans,
-                                      right_guess=right_guess, left_guess=left_guess,
-                                      eris=eris, imds=imds, type1=type1,
-                                      type2=type2, with_t3p2=True, with_t3p2_imds=True)
-
-def kernel_star(eom, nroots=1, koopmans=False, right_guess=None,
-                left_guess=None, eris=None, imds=None, type1=False,
-                type2=False):
-    """Calculates CCSD* perturbative correction.
-
-    Simply calls the relevant `kernel()` function and `perturb_star` of the `eom` class.
-
-    Returns:
-        e_t_a_star (list of float):
-            The EA-CCSD* energy.
-    """
-    return _perturbed_excited_wrapper(eom, nroots=1, koopmans=koopmans,
-                                      right_guess=right_guess, left_guess=left_guess,
-                                      eris=eris, imds=imds, type1=type1,
-                                      type2=type2, with_t3p2=False, with_t3p2_imds=False)
-
 
 class EOMIP(eom_rccsd.EOMIP):
     matvec = ipccsd_matvec
     l_matvec = lipccsd_matvec
     get_diag = ipccsd_diag
-    ipccsd_star = kernel_star
     _get_star_energy = _ipccsd_star  # calls star w/ explicit left/right amplitudes
-    ipccsd_t_a_star = kernel_t_a_star
-
-    def gen_matvec(self, imds=None, left=False, **kwargs):
-        with_t3p2 = kwargs.pop('with_t3p2', False)
-        copy_amps_t3p2 = kwargs.pop('copy_amps_t3p2', True)
-        with_t3p2_imds = kwargs.pop('with_t3p2_imds', False)
-        if kwargs:
-            raise TypeError('Unexpected **kwargs: %r' % kwargs)
-        if imds is None:
-            imds = self.make_imds(with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
-        diag = self.get_diag(imds)
-        if left:
-            matvec = lambda xs: [self.l_matvec(x, imds, diag, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
-                                 for x in xs]
-        else:
-            matvec = lambda xs: [self.matvec(x, imds, diag, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
-                                 for x in xs]
-        return matvec, diag
 
     def vector_to_amplitudes(self, vector, nmo=None, nocc=None):
         if nmo is None: nmo = self.nmo
@@ -790,27 +705,7 @@ class EOMEA(eom_rccsd.EOMEA):
     matvec = eaccsd_matvec
     l_matvec = leaccsd_matvec
     get_diag = eaccsd_diag
-    eaccsd_star = kernel_star
     _get_star_energy = _eaccsd_star  # calls star w/ explicit left/right amplitudes
-    eaccsd_t_a_star = kernel_t_a_star
-
-    def gen_matvec(self, imds=None, left=False, **kwargs):
-        with_t3p2 = kwargs.pop('with_t3p2', False)
-        copy_amps_t3p2 = kwargs.pop('copy_amps_t3p2', True)
-        with_t3p2_imds = kwargs.pop('with_t3p2_imds', False)
-        if kwargs:
-            raise TypeError('Unexpected **kwargs: %r' % kwargs)
-
-        if imds is None:
-            imds = self.make_imds(with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
-        diag = self.get_diag(imds)
-        if left:
-            matvec = lambda xs: [self.l_matvec(x, imds, diag, with_t3p2_imds=with_t3p2_imds)
-                                 for x in xs]
-        else:
-            matvec = lambda xs: [self.matvec(x, imds, diag, with_t3p2_imds=with_t3p2_imds)
-                                 for x in xs]
-        return matvec, diag
 
     def vector_to_amplitudes(self, vector, nmo=None, nocc=None):
         if nmo is None: nmo = self.nmo
@@ -976,17 +871,6 @@ class EOMEE(eom_rccsd.EOMEE):
         imds.make_ee()
         return imds
 
-    @property
-    def partition(self):
-        value = super(EOMEE, self).partition
-        return value
-
-    @partition.setter
-    def partition(self, p):
-        if p is not None:
-            raise NotImplementedError  # full partition isn't working properly for
-                                       # spin-orbitals as compared to rccsd version
-        self._partition = p
 
 def get_t3p2_amplitude_contribution(eom, t1, t2, eris=None, copy_amps=True,
                                     build_t1_t2=True, build_ip_t3p2=False,

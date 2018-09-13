@@ -30,7 +30,7 @@ from pyscf import __config__
 
 
 def kernel(eom, nroots=1, koopmans=False, guess=None, left=False,
-           eris=None, imds=None, **kwargs):
+           eris=None, imds=None, diag=None, **kwargs):
     cput0 = (time.clock(), time.time())
     log = logger.Logger(eom.stdout, eom.verbose)
     if eom.verbose >= logger.WARN:
@@ -38,9 +38,9 @@ def kernel(eom, nroots=1, koopmans=False, guess=None, left=False,
     eom.dump_flags()
 
     if imds is None:
-        imds = eom.make_imds(eris)
+        imds = eom.make_imds(eris, **kwargs)
 
-    matvec, diag = eom.gen_matvec(imds, left=left, **kwargs)
+    matvec, diag = eom.gen_matvec(imds, left=left, diag=diag, **kwargs)
 
     size = eom.vector_size()
     nroots = min(nroots, size)
@@ -134,6 +134,77 @@ class EOM(lib.StreamObject):
             assert p in ['mp','full']
         self._partition = p
 
+
+def _check_left_right_eigensystem(right_converged, right_evals, right_evecs,
+                                  left_converged, left_evals, left_evecs):
+    '''Ensure left and right eigenvalues match up.'''
+    return right_evals, right_evecs, left_evecs
+
+
+def pkernel(eom, nroots=1, koopmans=False, right_guess=None,
+            left_guess=None, eris=None, imds=None, type1=False,
+            type2=False, with_t3p2=True, with_t3p2_imds=True):
+    '''Wrapper for running perturbative excited-states that require both left
+    and right amplitudes.'''
+    if imds is None:
+        imds = eom.make_imds(with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
+
+    # Right eigenvectors
+    r_converged, r_e, r_v = \
+               kernel(eom, nroots, koopmans=koopmans, guess=right_guess, left=False,
+                      eris=eris, imds=imds, with_t3p2=with_t3p2,
+                      copy_amps_t3p2=True, with_t3p2_imds=with_t3p2_imds)
+    # Left eigenvectors
+    l_converged, l_e, l_v = \
+               kernel(eom, nroots, koopmans=koopmans, guess=right_guess, left=True,
+                      eris=eris, imds=imds, with_t3p2=with_t3p2,
+                      copy_amps_t3p2=True, with_t3p2_imds=with_t3p2_imds)
+
+    e, r_v, l_v = _check_left_right_eigensystem(r_converged, r_e, r_v, l_converged, l_e, l_v)
+    e_star = eom._get_star_energy(e, r_v, l_v, eris=imds.eris, type1=type1, type2=type2)
+    return e_star
+
+
+def kernel_t_a_star(eom, nroots=1, koopmans=False, right_guess=None,
+                    left_guess=None, eris=None, imds=None, type1=False,
+                    type2=False):
+    """Calculates perturbative correction IP-CCSD* using T3[2]-corrected T1/T2.
+
+    Returns:
+        e_t_a_star (array-like of float):
+            The IP-CCSD(T)_a* excitation energies.
+
+    Notes:
+        If either `with_t3p2` or `with_t3p2_imds` is False, then this does not
+        correspond to the ipccsd_t_a_star as it is defined in:
+
+        D. A. Matthews, J. F. Stanton "A new approach to approximate..."
+            JCP 145, 124102 (2016), Equation 14
+    """
+    return pkernel(eom, nroots=1, koopmans=koopmans,
+                   right_guess=right_guess, left_guess=left_guess,
+                   eris=eris, imds=imds, type1=type1,
+                   type2=type2, with_t3p2=True, with_t3p2_imds=True)
+
+
+def kernel_star(eom, nroots=1, koopmans=False, right_guess=None,
+                left_guess=None, eris=None, imds=None, type1=False,
+                type2=False):
+    """Calculates CCSD* perturbative correction.
+
+    Simply calls the relevant `kernel()` function and `perturb_star` of the
+     `eom` class.
+
+    Returns:
+        e_t_a_star (list of float):
+            The EA-CCSD* energy.
+    """
+    return pkernel(eom, nroots=1, koopmans=koopmans,
+                   right_guess=right_guess, left_guess=left_guess,
+                   eris=eris, imds=imds, type1=type1,
+                   type2=type2, with_t3p2=False, with_t3p2_imds=False)
+
+
 ########################################
 # EOM-IP-CCSD
 ########################################
@@ -172,9 +243,10 @@ def amplitudes_to_vector_ip(r1, r2):
     vector = np.hstack((r1, r2.ravel()))
     return vector
 
-def ipccsd_matvec(eom, vector, imds=None, diag=None):
+def ipccsd_matvec(eom, vector, imds=None, diag=None, with_t3p2=False, with_t3p2_imds=False):
     # Ref: Nooijen and Snijders, J. Chem. Phys. 102, 1681 (1995) Eqs.(8)-(9)
-    if imds is None: imds = eom.make_imds()
+    if imds is None:
+        imds = eom.make_imds(with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
     nocc = eom.nocc
     nmo = eom.nmo
     r1, r2 = vector_to_amplitudes_ip(vector, nmo, nocc)
@@ -216,13 +288,14 @@ def ipccsd_matvec(eom, vector, imds=None, diag=None):
     vector = amplitudes_to_vector_ip(Hr1, Hr2)
     return vector
 
-def lipccsd_matvec(eom, vector, imds=None, diag=None):
+def lipccsd_matvec(eom, vector, imds=None, diag=None, with_t3p2=False, with_t3p2_imds=False):
     '''For left eigenvector'''
     # Note this is not the same left EA equations used by Nooijen and Bartlett.
     # Small changes were made so that the same type L2 basis was used for both the
     # left EA and left IP equations.  You will note more similarity for these
     # equations to the left IP equations than for the left EA equations by Nooijen.
-    if imds is None: imds = eom.make_imds()
+    if imds is None:
+        imds = eom.make_imds(with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
     nocc = eom.nocc
     nmo = eom.nmo
     r1, r2 = vector_to_amplitudes_ip(vector, nmo, nocc)
@@ -294,7 +367,7 @@ def ipccsd_diag(eom, imds=None):
     vector = amplitudes_to_vector_ip(Hr1, Hr2)
     return vector
 
-def ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs, eris=None):
+def _ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs, eris=None):
     assert(eom.partition == None)
     if eris is None:
         eris = eom._cc.ao2mo()
@@ -392,15 +465,28 @@ class EOMIP(EOM):
     matvec = ipccsd_matvec
     l_matvec = lipccsd_matvec
     get_diag = ipccsd_diag
-    ipccsd_star = ipccsd_star
+    ipccsd_star = kernel_star
+    _ipccsd_star = _ipccsd_star
+    _get_star_energy = _ipccsd_star  # calls star w/ explicit left/right amplitudes
+    ipccsd_t_a_star = kernel_t_a_star
 
-    def gen_matvec(self, imds=None, left=False, **kwargs):
-        if imds is None: imds = self.make_imds()
-        diag = self.get_diag(imds)
+    def gen_matvec(self, imds=None, left=False, diag=None, **kwargs):
+        with_t3p2 = kwargs.pop('with_t3p2', False)
+        copy_amps_t3p2 = kwargs.pop('copy_amps_t3p2', True)
+        with_t3p2_imds = kwargs.pop('with_t3p2_imds', False)
+        if kwargs:
+            raise TypeError('Unexpected **kwargs: %r' % kwargs)
+        if imds is None:
+            imds = self.make_imds(with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
+        if diag is None: diag = self.get_diag(imds)
         if left:
-            matvec = lambda xs: [self.l_matvec(x, imds, diag) for x in xs]
+            matvec = lambda xs: [self.l_matvec(x, imds, diag, with_t3p2=with_t3p2,
+                                               with_t3p2_imds=with_t3p2_imds)
+                                 for x in xs]
         else:
-            matvec = lambda xs: [self.matvec(x, imds, diag) for x in xs]
+            matvec = lambda xs: [self.matvec(x, imds, diag, with_t3p2=with_t3p2,
+                                             with_t3p2_imds=with_t3p2_imds)
+                                 for x in xs]
         return matvec, diag
 
     def vector_to_amplitudes(self, vector, nmo=None, nocc=None):
@@ -416,9 +502,9 @@ class EOMIP(EOM):
         nvir = self.nmo - nocc
         return nocc + nocc*nocc*nvir
 
-    def make_imds(self, eris=None):
+    def make_imds(self, eris=None, **kwargs):
         imds = _IMDS(self._cc, eris=eris)
-        imds.make_ip(self.partition)
+        imds.make_ip(self.partition, **kwargs)
         return imds
 
     @property
@@ -449,9 +535,10 @@ def amplitudes_to_vector_ea(r1, r2):
     vector = np.hstack((r1, r2.ravel()))
     return vector
 
-def eaccsd_matvec(eom, vector, imds=None, diag=None):
+def eaccsd_matvec(eom, vector, imds=None, diag=None, with_t3p2=False, with_t3p2_imds=False):
     # Ref: Nooijen and Bartlett, J. Chem. Phys. 102, 3629 (1994) Eqs.(30)-(31)
-    if imds is None: imds = eom.make_imds()
+    if imds is None:
+        imds = eom.make_imds(with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
     nocc = eom.nocc
     nmo = eom.nmo
     nvir = nmo - nocc
@@ -493,12 +580,13 @@ def eaccsd_matvec(eom, vector, imds=None, diag=None):
     vector = amplitudes_to_vector_ea(Hr1,Hr2)
     return vector
 
-def leaccsd_matvec(eom, vector, imds=None, diag=None):
+def leaccsd_matvec(eom, vector, imds=None, diag=None, with_t3p2=False, with_t3p2_imds=False):
     # Note this is not the same left EA equations used by Nooijen and Bartlett.
     # Small changes were made so that the same type L2 basis was used for both the
     # left EA and left IP equations.  You will note more similarity for these
     # equations to the left IP equations than for the left EA equations by Nooijen.
-    if imds is None: imds = eom.make_imds()
+    if imds is None:
+        imds = eom.make_imds(with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
     nocc = eom.nocc
     nmo = eom.nmo
     nvir = nmo - nocc
@@ -576,7 +664,7 @@ def eaccsd_diag(eom, imds=None):
     vector = amplitudes_to_vector_ea(Hr1,Hr2)
     return vector
 
-def eaccsd_star(eom, eaccsd_evals, eaccsd_evecs, leaccsd_evecs, eris=None):
+def _eaccsd_star(eom, eaccsd_evals, eaccsd_evecs, leaccsd_evecs, eris=None):
     assert(eom.partition == None)
     if eris is None:
         eris = eom._cc.ao2mo()
@@ -675,15 +763,27 @@ class EOMEA(EOM):
     matvec = eaccsd_matvec
     l_matvec = leaccsd_matvec
     get_diag = eaccsd_diag
-    eaccsd_star = eaccsd_star
+    eaccsd_star = kernel_star
+    _eaccsd_star = _eaccsd_star
+    _get_star_energy = _eaccsd_star  # calls star w/ explicit left/right amplitudes
+    eaccsd_t_a_star = kernel_t_a_star
 
-    def gen_matvec(self, imds=None, left=False, **kwargs):
-        if imds is None: imds = self.make_imds()
-        diag = self.get_diag(imds)
+    def gen_matvec(self, imds=None, left=False, diag=None, **kwargs):
+        with_t3p2 = kwargs.pop('with_t3p2', False)
+        copy_amps_t3p2 = kwargs.pop('copy_amps_t3p2', True)
+        with_t3p2_imds = kwargs.pop('with_t3p2_imds', False)
+        if kwargs:
+            raise TypeError('Unexpected **kwargs: %r' % kwargs)
+
+        if imds is None:
+            imds = self.make_imds(with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
+        if diag is None: diag = self.get_diag(imds)
         if left:
-            matvec = lambda xs: [self.l_matvec(x, imds, diag) for x in xs]
+            matvec = lambda xs: [self.l_matvec(x, imds, diag, with_t3p2_imds=with_t3p2_imds)
+                                 for x in xs]
         else:
-            matvec = lambda xs: [self.matvec(x, imds, diag) for x in xs]
+            matvec = lambda xs: [self.matvec(x, imds, diag, with_t3p2_imds=with_t3p2_imds)
+                                 for x in xs]
         return matvec, diag
 
     def vector_to_amplitudes(self, vector, nmo=None, nocc=None):
@@ -699,9 +799,9 @@ class EOMEA(EOM):
         nvir = self.nmo - nocc
         return nvir + nocc*nvir*nvir
 
-    def make_imds(self, eris=None):
+    def make_imds(self, eris=None, **kwargs):
         imds = _IMDS(self._cc, eris=eris)
-        imds.make_ea(self.partition)
+        imds.make_ea(self.partition, **kwargs)
         return imds
 
     @property
@@ -1341,6 +1441,17 @@ class EOMEE(EOM):
     def eee(self):
         return self.e
 
+    @property
+    def partition(self):
+        value = super(EOMEE, self).partition
+        return value
+
+    @partition.setter
+    def partition(self, p):
+        if p is not None:
+            raise NotImplementedError
+        self._partition = p
+
 
 class EOMEESinglet(EOMEE):
     kernel = eomee_ccsd_singlet
@@ -1348,8 +1459,6 @@ class EOMEESinglet(EOMEE):
     matvec = eeccsd_matvec_singlet
 
     def gen_matvec(self, imds=None, diag=None, **kwargs):
-        if kwargs:
-            raise TypeError('Unexpected **kwargs: %r' % kwargs)
         if imds is None: imds = self.make_imds()
         if diag is None: diag = self.get_diag(imds)[0]
         matvec = lambda xs: [self.matvec(x, imds) for x in xs]
@@ -1376,8 +1485,6 @@ class EOMEETriplet(EOMEE):
     matvec = eeccsd_matvec_triplet
 
     def gen_matvec(self, imds=None, diag=None, **kwargs):
-        if kwargs:
-            raise TypeError('Unexpected **kwargs: %r' % kwargs)
         if imds is None: imds = self.make_imds()
         if diag is None: diag = self.get_diag(imds)[1]
         matvec = lambda xs: [self.matvec(x, imds) for x in xs]
@@ -1404,8 +1511,6 @@ class EOMEESpinFlip(EOMEE):
     matvec = eeccsd_matvec_sf
 
     def gen_matvec(self, imds=None, diag=None, **kwargs):
-        if kwargs:
-            raise TypeError('Unexpected **kwargs: %r' % kwargs)
         if imds is None: imds = self.make_imds()
         if diag is None: diag = self.get_diag(imds)[2]
         matvec = lambda xs: [self.matvec(x, imds) for x in xs]
@@ -1464,7 +1569,8 @@ class _IMDS:
         log.timer_debug1('EOM-CCSD shared two-electron intermediates', *cput0)
         return self
 
-    def make_ip(self, ip_partition=None):
+    def make_ip(self, ip_partition=None, **kwargs):
+        self.make_t3p2_imds(**kwargs)
         self._make_shared_1e()
         if not self._made_shared_2e and ip_partition != 'mp':
             self._make_shared_2e()
@@ -1482,7 +1588,35 @@ class _IMDS:
         log.timer_debug1('EOM-CCSD IP intermediates', *cput0)
         return self
 
-    def make_ea(self, ea_partition=None):
+    def make_t3p2_imds(self, **kwargs):
+        with_t3p2 = kwargs.pop('with_t3p2', False)
+        copy_amps_t3p2 = kwargs.pop('copy_amps_t3p2', True)
+        with_t3p2_imds = kwargs.pop('with_t3p2_imds', False)
+        if kwargs:
+            raise TypeError('Unexpected **kwargs: %r' % kwargs)
+
+        cput0 = (time.clock(), time.time())
+
+        t1, t2, eris = self.t1, self.t2, self.eris
+        #drv = get_t3p2_amplitude_contribution
+        #if (with_t3p2 or with_t3p2_imds) and (not self.made_t3p2_correction):
+        #    delta_ccsd_energy, t1, t2, Wmcik, Wacek = \
+        #        drv(self, t1, t2, eris=eris, copy_amps=copy_amps_t3p2,
+        #            build_t1_t2=with_t3p2, build_ip_t3p2=with_t3p2_imds,
+        #            build_ea_t3p2=with_t3p2_imds)
+        #    if with_t3p2_imds:
+        #        self.Wovoo_t3p2 = Wmcik
+        #        self.Wvvvo_t3p2 = Wacek
+
+        #    self.t1 = t1
+        #    self.t2 = t2
+        #    self.made_t3p2_correction = True
+
+        logger.timer_debug1(self, 'EOM-CCSD T3[2] intermediates', *cput0)
+        return self
+
+    def make_ea(self, ea_partition=None, **kwargs):
+        self.make_t3p2_imds(**kwargs)
         self._make_shared_1e()
         if not self._made_shared_2e and ea_partition != 'mp':
             self._make_shared_2e()
@@ -1503,7 +1637,9 @@ class _IMDS:
         return self
 
 
-    def make_ee(self):
+    def make_ee(self, **kwargs):
+        if kwargs:
+            raise TypeError('Unexpected **kwargs: %r' % kwargs)
         cput0 = (time.clock(), time.time())
         log = logger.Logger(self.stdout, self.verbose)
 
