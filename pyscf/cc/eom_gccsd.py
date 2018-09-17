@@ -1050,12 +1050,12 @@ def get_t3p2_amplitude_contribution_slow(eom, t1, t2, eris=None, copy_amps=True,
 
     ccsd_energy = gccsd.energy(eom, t1, t2, eris)
 
-    if copy_amps:
-        pt1 = t1.copy()
-        pt2 = t2.copy()
-    else:
-        pt1 = t1
-        pt2 = t2
+    #if copy_amps:
+    #    pt1 = t1.copy()
+    #    pt2 = t2.copy()
+    #else:
+    #    pt1 = t1.copy()
+    #    pt2 = t2.copy()
 
     if build_ip_t3p2:
         Wmcik = np.zeros((nocc,nvir,nocc,nocc), dtype=np.result_type(t1, t2))
