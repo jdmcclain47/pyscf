@@ -622,13 +622,16 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         size = nocc + nkpts ** 2 * nocc ** 2 * nvir
         return size
 
-    def ipccsd(self, nroots=1, koopmans=False, guess=None, partition=None,
+    def ipccsd(self, nroots=1, left=False, koopmans=False, guess=None, partition=None,
                kptlist=None):
         '''Calculate (N-1)-electron charged excitations via IP-EOM-CCSD.
 
         Kwargs:
             nroots : int
                 Number of roots (eigenvalues) requested per k-point
+            left : bool
+                Whether to calculate the left amplitudes.  Defaults to calculating right
+                amplitudes.
             koopmans : bool
                 Calculate Koopmans'-like (quasiparticle) excitations only, targeting via
                 overlap.
@@ -658,6 +661,11 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         self.ip_partition = partition
         evals = np.zeros((len(kptlist), nroots), np.float)
         evecs = np.zeros((len(kptlist), nroots, size), np.complex)
+
+        if left:
+            matvec = lambda _arg: self.lipccsd_matvec(_arg, kshift)
+        else:
+            matvec = lambda _arg: self.ipccsd_matvec(_arg, kshift)
 
         for k, kshift in enumerate(kptlist):
             adiag = self.ipccsd_diag(kshift)
@@ -700,11 +708,11 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
                     idx = np.argmax(np.abs(np.dot(np.array(guess).conj(), np.array(x0).T)), axis=1)
                     return lib.linalg_helper._eigs_cmplx2real(w, v, idx)
 
-                evals_k, evecs_k = eig(lambda _arg: self.ipccsd_matvec(_arg, kshift), guess, precond, pick=pickeig,
+                evals_k, evecs_k = eig(matvec, guess, precond, pick=pickeig,
                                        tol=self.conv_tol, max_cycle=self.max_cycle,
                                        max_space=self.max_space, nroots=nroots, verbose=self.verbose)
             else:
-                evals_k, evecs_k = eig(lambda _arg: self.ipccsd_matvec(_arg, kshift), guess, precond,
+                evals_k, evecs_k = eig(matvec, guess, precond,
                                        tol=self.conv_tol, max_cycle=self.max_cycle,
                                        max_space=self.max_space, nroots=nroots, verbose=self.verbose)
             if not user_guess:
@@ -792,6 +800,79 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
             tmp = (2. * einsum('xyklcd,xykld->c', imds.Woovv[:, :, kshift], r2[:, :])
                       - einsum('yxlkcd,xykld->c', imds.Woovv[:, :, kshift], r2[:, :]))
             Hr2[:, :] += -einsum('c,xyijcb->xyijb', tmp, t2[:, :, kshift])
+
+        return self.mask_frozen_ip(self.ip_amplitudes_to_vector(Hr1, Hr2), kshift, const=0.0)
+
+    def lipccsd_matvec(self, vector, kshift):
+        # Ref: Nooijen and Snijders, J. Chem. Phys. 102, 1681 (1995) Eqs.(8)-(9)
+        if not hasattr(self, 'imds'):
+            self.imds = _IMDS(self)
+        if not self.imds.made_ip_imds:
+            self.imds.make_ip(self.ip_partition)
+        imds = self.imds
+
+        vector = self.mask_frozen_ip(vector, kshift, const=0.0)
+        r1, r2 = self.ip_vector_to_amplitudes(vector)
+
+        t1, t2 = self.t1, self.t2
+        nkpts = self.nkpts
+        kconserv = self.khelper.kconserv
+
+        Hr1 = -einsum('ki,i->k',imds.Loo[kshift],r1)
+        for ki, kb in product(range(nkpts), repeat=2):
+            kj = kconserv[kshift,ki,kb]
+            Hr1 -= einsum('kbij,ijb->k',imds.Wovoo[kshift,kb,ki],r2[ki,kj])
+
+        Hr2 = np.zeros(r2.shape, dtype=np.complex128)
+        for kl, kk in product(range(nkpts), repeat=2):
+            kd = kconserv[kk,kshift,kl]
+            SWooov = (2. * imds.Wooov[kk,kl,kshift] -
+                           imds.Wooov[kl,kk,kshift].transpose(1, 0, 2, 3))
+            Hr2[kk,kl] -= einsum('klid,i->kld',SWooov,r1)
+
+            Hr2[kk,kshift] -= (kk==kd)*einsum('kd,l->kld',imds.Fov[kk],r1)
+            Hr2[kshift,kl] += (kl==kd)*2.*einsum('ld,k->kld',imds.Fov[kl],r1)
+
+        if partition == 'mp':
+            fock = self.eris.fock
+            foo = fock[:,:nocc,:nocc]
+            fvv = fock[:,nocc:,nocc:]
+            for kl, kk in product(range(nkpts), repeat=2):
+                kd = kconserv[kk,kshift,kl]
+                Hr2[kk,kl] -= einsum('ki,ild->kld',foo[kk],r2[kk,kl])
+                Hr2[kk,kl] -= einsum('lj,kjd->kld',foo[kl],r2[kk,kl])
+                Hr2[kk,kl] += einsum('bd,klb->kld',fvv[kd],r2[kk,kl])
+        elif self.ip_partition == 'full':
+            Hr2 += self._ipccsd_diag_matrix2*r2
+        else:
+            r2t2_tmp = numpy.zeros((nvir),dtype=t1.dtype)
+            for ki, kj in product(range(nkpts), repeat=2):
+                kc = kshift
+                r2t2_tmp += einsum('ijcb,ijb->c',t2[ki, kj, kc],r2[ki, kj])
+
+            for kl, kk in product(range(nkpts), repeat=2):
+                kd = kconserv[kk,kshift,kl]
+                Hr2[kk,kl] -= einsum('ki,ild->kld',imds.Loo[kk],r2[kk,kl])
+                Hr2[kk,kl] -= einsum('lj,kjd->kld',imds.Loo[kl],r2[kk,kl])
+                Hr2[kk,kl] += einsum('bd,klb->kld',imds.Lvv[kd],r2[kk,kl])
+
+                SWoovv = (2. * imds.Woovv[kl, kk, kd] -
+                               imds.Woovv[kk, kl, kd].transpose(1, 0, 2, 3))
+                Hr2[kk, kl] -= einsum('kldc,c->kld',SWoovv,r2t2_tmp)
+
+                for kj in range(nkpts):
+                    kb = kconserv[kd, kl, kj]
+
+                    SWovvo = (2. * imds.Wovvo[kl,kb,kd] -
+                                   imds.Wovov[kl,kb,kj].transpose(0, 1, 3, 2))
+                    Hr2[kk,kl] += einsum('lbdj,kjb->kld',SWovvo,r2[kk,kj])
+
+                    kb = kconserv[kd, kk, kj]
+                    Hr2[kk,kl] -= einsum('kbdj,ljb->kld',imds.Wovvo[kk,kb,kd],r2[kl,kj])
+                    Hr2[kk,kl] -= einsum('kbjd,jlb->kld',imds.Wovov[kk,kb,kj],r2[kj,kl])
+
+                    ki = kconserv[kk,kj,kl]
+                    Hr2[kk,kl] += einsum('klji,jid->kld',imds.Woooo[kk,kl,kj],r2[kj,ki])
 
         return self.mask_frozen_ip(self.ip_amplitudes_to_vector(Hr1, Hr2), kshift, const=0.0)
 
