@@ -272,6 +272,54 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(finger(eris3.vovv), -0.12653400071328597+0.17634730800584489j , 12)
         self.assertAlmostEqual(finger(eris3.Lpv ), -2.2567245764033323 +0.76488030281400821j, 12)
 
+    def test_ipccsd(self):
+        cell = make_test_cell.test_cell_n3_diffuse()
+        nk = (1, 1, 2)
+        ehf_bench = -3.8472809944154
+        ecc_bench = -0.0940275096207
+
+        abs_kpts = cell.make_kpts(nk, with_gamma_point=True)
+
+        # RHF calculation
+        kmf = pbcscf.KRHF(cell, abs_kpts, exxdiv=None)
+        kmf.conv_tol = 1e-10
+        ehf = kmf.scf()
+
+        cc = pbcc.kccsd_rhf.RCCSD(kmf, frozen=[[0],[0,1]])
+        cc.conv_tol = 1e-10
+        ecc, t1, t2 = cc.kernel()
+        self.assertAlmostEqual(ehf, ehf_bench, 6)
+        self.assertAlmostEqual(ecc, ecc_bench, 6)
+
+        e, v = cc.ipccsd(nroots=1, kptlist=(0,))
+        le, lv = cc.ipccsd(nroots=1, left=True, kptlist=(0,))
+        self.assertAlmostEqual(e, -1.653665457387385, 6)
+        self.assertAlmostEqual(e, -1.653665457387385, 6)
+
+    def test_eaccsd(self):
+        cell = make_test_cell.test_cell_n3_diffuse()
+        nk = (1, 1, 2)
+        ehf_bench = -3.8472809944154
+        ecc_bench = -0.1233693591081592
+
+        abs_kpts = cell.make_kpts(nk, with_gamma_point=True)
+
+        # RHF calculation
+        kmf = pbcscf.KRHF(cell, abs_kpts, exxdiv=None)
+        kmf.conv_tol = 1e-12
+        ehf = kmf.scf()
+
+        cc = pbcc.kccsd_rhf.RCCSD(kmf, frozen=[[0,3],[0]])
+        cc.conv_tol = 1e-12
+        ecc, t1, t2 = cc.kernel()
+        self.assertAlmostEqual(ehf, ehf_bench, 6)
+        self.assertAlmostEqual(ecc, ecc_bench, 6)
+
+        e, v = cc.eaccsd(nroots=1, kptlist=(0,))
+        le, lv = cc.eaccsd(nroots=1, left=True, kptlist=(0,))
+        self.assertAlmostEqual(e, 1.752840341399152, 6)
+        self.assertAlmostEqual(e, 1.752840341399152, 6)
+
     def _test_cu_metallic_nonequal_occ(self, kmf, cell, ecc1_bench=-0.9646107739333411):
         assert cell.mesh == [7, 7, 7]
         max_cycle = 5  # Too expensive to do more
