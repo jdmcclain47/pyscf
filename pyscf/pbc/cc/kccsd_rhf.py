@@ -624,7 +624,7 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         return size
 
     def ipccsd(self, nroots=1, left=False, koopmans=False, guess=None, partition=None,
-               kptlist=None):
+               kptlist=None, **kwargs):
         '''Calculate (N-1)-electron charged excitations via IP-EOM-CCSD.
 
         Kwargs:
@@ -664,9 +664,18 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         evecs = np.zeros((len(kptlist), nroots, size), np.complex)
 
         if left:
-            matvec = lambda _arg: self.lipccsd_matvec(_arg, kshift)
+            matvec = lambda _arg: self.lipccsd_matvec(_arg, kshift, **kwargs)
         else:
-            matvec = lambda _arg: self.ipccsd_matvec(_arg, kshift)
+            matvec = lambda _arg: self.ipccsd_matvec(_arg, kshift, **kwargs)
+
+        # Initialize intermediates
+        with_t3p2 = kwargs.pop('with_t3p2', False)
+        copy_amps_t3p2 = kwargs.pop('copy_amps_t3p2', True)
+        with_t3p2_imds = kwargs.pop('with_t3p2_imds', False)
+        if kwargs:
+            raise TypeError('Unexpected **kwargs: %r' % kwargs)
+        if not hasattr(self, 'imds'):
+            self.imds = _IMDS(self, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
 
         for k, kshift in enumerate(kptlist):
             adiag = self.ipccsd_diag(kshift)
@@ -735,11 +744,14 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         self.eip = evals
         return self.eip, evecs
 
-    def ipccsd_matvec(self, vector, kshift):
+    def ipccsd_matvec(self, vector, kshift, imds=None, diag=None, with_t3p2=False, with_t3p2_imds=False):
         '''2ph operators are of the form s_{ij}^{ b}, i.e. 'jb' indices are coupled.'''
         # Ref: Nooijen and Snijders, J. Chem. Phys. 102, 1681 (1995) Eqs.(8)-(9)
         if not hasattr(self, 'imds'):
-            self.imds = _IMDS(self)
+            if imds is None:
+                self.imds = _IMDS(self, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
+            else:
+                self.imds = imds
         if not self.imds.made_ip_imds:
             self.imds.make_ip(self.ip_partition)
         imds = self.imds
@@ -770,6 +782,8 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
             for kj in range(nkpts):
                 kb = kconserv[ki, kshift, kj]
                 Hr2[ki, kj] -= einsum('kbij,k->ijb', imds.Wovoo[kshift, kb, ki], r1)
+                if with_t3p2_imds:
+                    Hr2[ki, kj] += -np.einsum('kbij,k->ijb', imds.Wovoo_t3p2[kshift, kb, ki], r1)
         # 2h1p-2h1p block
         if self.ip_partition == 'mp':
             nkpts, nocc, nvir = self.t1.shape
@@ -806,10 +820,13 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
 
         return self.mask_frozen_ip(self.ip_amplitudes_to_vector(Hr1, Hr2), kshift, const=0.0)
 
-    def lipccsd_matvec(self, vector, kshift):
+    def lipccsd_matvec(self, vector, kshift, imds=None, diag=None, with_t3p2=False, with_t3p2_imds=False):
         # Ref: Nooijen and Snijders, J. Chem. Phys. 102, 1681 (1995) Eqs.(8)-(9)
         if not hasattr(self, 'imds'):
-            self.imds = _IMDS(self)
+            if imds is None:
+                self.imds = _IMDS(self, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
+            else:
+                self.imds = imds
         if not self.imds.made_ip_imds:
             self.imds.make_ip(self.ip_partition)
         imds = self.imds
@@ -827,6 +844,8 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         for ki, kb in product(range(nkpts), repeat=2):
             kj = kconserv[kshift,ki,kb]
             Hr1 -= einsum('kbij,ijb->k',imds.Wovoo[kshift,kb,ki],r2[ki,kj])
+            if with_t3p2_imds:
+                Hr1 += -np.einsum('kbij,ijb->k', imds.Wovoo_t3p2[kshift,kb,ki], r2[ki,kj])
 
         Hr2 = np.zeros(r2.shape, dtype=np.complex128)
         for kl, kk in product(range(nkpts), repeat=2):
@@ -881,9 +900,9 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
 
         return self.mask_frozen_ip(self.ip_amplitudes_to_vector(Hr1, Hr2), kshift, const=0.0)
 
-    def ipccsd_diag(self, kshift):
+    def ipccsd_diag(self, kshift, with_t3p2=False, with_t3p2_imds=False):
         if not hasattr(self, 'imds'):
-            self.imds = _IMDS(self)
+            self.imds = _IMDS(self, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
         if not self.imds.made_ip_imds:
             self.imds.make_ip(self.ip_partition)
         imds = self.imds
@@ -961,7 +980,7 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         return size
 
     def eaccsd(self, nroots=1, left=False, koopmans=False, guess=None, partition=None,
-               kptlist=None):
+               kptlist=None, **kwargs):
         '''Calculate (N+1)-electron charged excitations via EA-EOM-CCSD.
 
         Kwargs:
@@ -984,6 +1003,15 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         self.ea_partition = partition
         evals = np.zeros((len(kptlist), nroots), np.float)
         evecs = np.zeros((len(kptlist), nroots, size), np.complex)
+
+        # Initialize intermediates
+        with_t3p2 = kwargs.pop('with_t3p2', False)
+        copy_amps_t3p2 = kwargs.pop('copy_amps_t3p2', True)
+        with_t3p2_imds = kwargs.pop('with_t3p2_imds', False)
+        if kwargs:
+            raise TypeError('Unexpected **kwargs: %r' % kwargs)
+        if not hasattr(self, 'imds'):
+            self.imds = _IMDS(self, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
 
         for k, kshift in enumerate(kptlist):
             if left:
@@ -1057,10 +1085,13 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         self.eea = evals
         return self.eea, evecs
 
-    def eaccsd_matvec(self, vector, kshift):
+    def eaccsd_matvec(self, vector, kshift, imds=None, diag=None, with_t3p2=False, with_t3p2_imds=False):
         # Ref: Nooijen and Bartlett, J. Chem. Phys. 102, 3629 (1994) Eqs.(30)-(31)
         if not hasattr(self, 'imds'):
-            self.imds = _IMDS(self)
+            if imds is None:
+                self.imds = _IMDS(self, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
+            else:
+                self.imds = imds
         if not self.imds.made_ea_imds:
             self.imds.make_ea(self.ea_partition)
         imds = self.imds
@@ -1093,6 +1124,8 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
             for ka in range(nkpts):
                 kb = kconserv[kshift,ka,kj]
                 Hr2[kj,ka] += einsum('abcj,c->jab',imds.Wvvvo[ka,kb,kshift],r1)
+                if with_t3p2_imds:
+                    Hr2[kj,ka] += einsum('abcj,c->jab',imds.Wvvvo_t3p2[ka,kb,kshift],r1)
 
         # 2p1h-2p1h block
         if self.ea_partition == 'mp':
@@ -1135,10 +1168,13 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
 
         return self.mask_frozen_ea(self.ea_amplitudes_to_vector(Hr1, Hr2), kshift, const=0.0)
 
-    def leaccsd_matvec(self, vector, kshift):
+    def leaccsd_matvec(self, vector, kshift, imds=None, diag=None, with_t3p2=False, with_t3p2_imds=False):
         # Ref: Nooijen and Bartlett, J. Chem. Phys. 102, 3629 (1994) Eqs.(30)-(31)
         if not hasattr(self, 'imds'):
-            self.imds = _IMDS(self)
+            if imds is None:
+                self.imds = _IMDS(self, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
+            else:
+                self.imds = imds
         if not self.imds.made_ea_imds:
             self.imds.make_ea(self.ea_partition)
         imds = self.imds
@@ -1158,6 +1194,8 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         for kj, ka in product(range(nkpts), repeat=2):
             kb = kconserv[kj, ka, kshift]
             Hr1 += np.einsum('abcj,jab->c', imds.Wvvvo[ka, kb, kshift], r2[kj, ka])
+            if with_t3p2_imds:
+                Hr1 += np.einsum('abcj,jab->c', imds.Wvvvo_t3p2[ka, kb, kshift], r2[kj, ka])
 
         # 2p1h-1p block
         Hr2 = np.zeros((nkpts, nkpts, nocc, nvir, nvir), dtype=np.complex128)
@@ -1212,9 +1250,9 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
 
         return self.mask_frozen_ea(self.ea_amplitudes_to_vector(Hr1, Hr2), kshift, const=0.0)
 
-    def eaccsd_diag(self, kshift):
+    def eaccsd_diag(self, kshift, with_t3p2=False, with_t3p2_imds=False):
         if not hasattr(self, 'imds'):
-            self.imds = _IMDS(self)
+            self.imds = _IMDS(self, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
         if not self.imds.made_ea_imds:
             self.imds.make_ea(self.ea_partition)
         imds = self.imds
@@ -1544,11 +1582,15 @@ imd = imdk
 
 class _IMDS:
     # Identical to molecular rccsd_slow
-    def __init__(self, cc):
+    def __init__(self, cc, with_t3p2=False, copy_amps_t3p2=True, with_t3p2_imds=False):
         self.verbose = cc.verbose
         self.stdout = cc.stdout
-        self.t1 = cc.t1
-        self.t2 = cc.t2
+        if copy_amps_t3p2 is True:
+            self.t1 = cc.t1.copy()
+            self.t2 = cc.t2.copy()
+        else:
+            self.t1 = cc.t1
+            self.t2 = cc.t2
         self.eris = cc.eris
         self.kconserv = cc.khelper.kconserv
         self.made_ip_imds = False
