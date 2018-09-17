@@ -261,6 +261,8 @@ def ipccsd_matvec(eom, vector, imds=None, diag=None, with_t3p2=False, with_t3p2_
 
     # 2h1p-1h block
     Hr2 = -np.einsum('kbij,k->ijb', imds.Wovoo, r1)
+    if with_t3p2_imds:
+        Hr2 += -np.einsum('kbij,k->ijb', imds.Wovoo_t3p2, r1)
     # 2h1p-2h1p block
     if eom.partition == 'mp':
         fock = imds.eris.fock
@@ -304,6 +306,8 @@ def lipccsd_matvec(eom, vector, imds=None, diag=None, with_t3p2=False, with_t3p2
     Hr1 = -np.einsum('ki,i->k', imds.Loo, r1)
     #1h-2h1p block
     Hr1 += -np.einsum('kbij,ijb->k', imds.Wovoo, r2)
+    if with_t3p2_imds:
+        Hr1 += -np.einsum('kbij,ijb->k', imds.Wovoo_t3p2, r2)
 
     # 2h1p-1h block
     Hr2 = -np.einsum('kd,l->kld', imds.Fov, r1)
@@ -367,8 +371,9 @@ def ipccsd_diag(eom, imds=None):
     vector = amplitudes_to_vector_ip(Hr1, Hr2)
     return vector
 
-def _ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs, eris=None):
+def _ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs, eris=None, type1=False, type2=False):
     assert(eom.partition == None)
+    assert((type1 is False) and (type2 is False))
     if eris is None:
         eris = eom._cc.ao2mo()
     t1, t2 = eom._cc.t1, eom._cc.t2
@@ -396,6 +401,8 @@ def _ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs, eris=None):
     ipccsd_evecs  = np.array(ipccsd_evecs)
     lipccsd_evecs = np.array(lipccsd_evecs)
     e = []
+    ipccsd_evecs, lipccsd_evecs = [np.atleast_2d(x) for x in [ipccsd_evecs, lipccsd_evecs]]
+    ipccsd_evals = np.atleast_1d(ipccsd_evals)
     for _eval, _evec, _levec in zip(ipccsd_evals, ipccsd_evecs, lipccsd_evecs):
         l1, l2 = eom.vector_to_amplitudes(_levec)
         r1, r2 = eom.vector_to_amplitudes(_evec)
@@ -554,6 +561,8 @@ def eaccsd_matvec(eom, vector, imds=None, diag=None, with_t3p2=False, with_t3p2_
     # Eq. (31)
     # 2p1h-1p block
     Hr2 = np.einsum('abcj,c->jab', imds.Wvvvo, r1)
+    if with_t3p2_imds:
+        Hr2 += np.einsum('abcj,c->jab', imds.Wvvvo_t3p2, r1)
     # 2p1h-2p1h block
     if eom.partition == 'mp':
         fock = imds.eris.fock
@@ -597,6 +606,8 @@ def leaccsd_matvec(eom, vector, imds=None, diag=None, with_t3p2=False, with_t3p2
     Hr1 = np.einsum('ac,a->c', imds.Lvv, r1)
     # 1p-2p1h block
     Hr1 += np.einsum('abcj,jab->c', imds.Wvvvo, r2)
+    if with_t3p2_imds:
+        Hr1 += np.einsum('abcj,jab->c', imds.Wvvvo_t3p2, r2)
     # Eq. (31)
     # 2p1h-1p block
     Hr2 = 2.*np.einsum('c,ld->lcd', r1, imds.Fov)
@@ -664,8 +675,9 @@ def eaccsd_diag(eom, imds=None):
     vector = amplitudes_to_vector_ea(Hr1,Hr2)
     return vector
 
-def _eaccsd_star(eom, eaccsd_evals, eaccsd_evecs, leaccsd_evecs, eris=None):
+def _eaccsd_star(eom, eaccsd_evals, eaccsd_evecs, leaccsd_evecs, eris=None, type1=False, type2=False):
     assert(eom.partition == None)
+    assert((type1 is False) and (type2 is False))
     if eris is None:
         eris = eom._cc.ao2mo()
     t1, t2 = eom._cc.t1, eom._cc.t2
@@ -693,6 +705,8 @@ def _eaccsd_star(eom, eaccsd_evals, eaccsd_evecs, leaccsd_evecs, eris=None):
     eaccsd_evecs  = np.array(eaccsd_evecs)
     leaccsd_evecs = np.array(leaccsd_evecs)
     e = []
+    eaccsd_evecs, leaccsd_evecs = [np.atleast_2d(x) for x in [eaccsd_evecs, leaccsd_evecs]]
+    eaccsd_evals = np.atleast_1d(eaccsd_evals)
     for _eval, _evec, _levec in zip(eaccsd_evals, eaccsd_evecs, leaccsd_evecs):
         l1, l2 = eom.vector_to_amplitudes(_levec)
         r1, r2 = eom.vector_to_amplitudes(_evec)
@@ -1532,16 +1546,145 @@ class EOMEESpinFlip(EOMEE):
         return nocc*nvir + nbaaa + naaba
 
 
+def get_t3p2_amplitude_contribution_slow(eom, t1, t2, eris=None, copy_amps=True,
+                                         build_t1_t2=True, build_ip_t3p2=False,
+                                         build_ea_t3p2=False):
+    """Calculates T1, T2 amplitudes corrected by second-order T3 contribution
+
+    Args:
+        eom (:obj:`EOMIP`):
+            Object containing coupled-cluster results.
+        t1 (:obj:`ndarray`):
+            T1 amplitudes.
+        t2 (:obj:`ndarray`):
+            T2 amplitudes from which the T3[2] amplitudes are formed.
+        eris (:obj:`_PhysicistsERIs`):
+            Antisymmetrized electron-repulsion integrals in physicist's notation.
+        copy_amps (bool):
+            Whether to copy the t1, t2 amps.  Currently only the default True is
+            allowed.
+
+    Returns:
+        delta_ccsd (float):
+            Difference of perturbed and unperturbed CCSD ground-state energy,
+                energy(T1 + T1[2], T2 + T2[2]) - energy(T1, T2)
+        pt1 (:obj:`ndarray`):
+            Perturbatively corrected T1 amplitudes.
+        pt2 (:obj:`ndarray`):
+            Perturbatively corrected T2 amplitudes.
+
+    Reference:
+        D. A. Matthews, J. F. Stanton "A new approach to approximate..."
+            JCP 145, 124102 (2016), Equation 14
+        Shavitt and Bartlett "Many-body Methods in Physics and Chemistry"
+            2009, Equation 10.33
+    """
+    assert(copy_amps == True)
+    if eris is None:
+        eris = eom._cc.ao2mo()
+    fock = eris.fock
+    nocc, nvir = t1.shape
+
+    fov = fock[:nocc, nocc:]
+    foo = fock[:nocc, :nocc].diagonal()
+    fvv = fock[nocc:, nocc:].diagonal()
+    dtype = np.result_type(t1, t2)
+
+    ovov = _cp(eris.ovov)
+    ovvv = _cp(eris.get_ovvv())
+    eris_vvov = eris.get_ovvv().conj().transpose(1,3,0,2)
+    eris_vooo = eris.ovoo.conj().transpose(1,0,3,2)
+
+    ccsd_energy = ccsd.energy(eom, t1, t2, eris)
+
+    if build_ip_t3p2:
+        Wmbkj = np.zeros((nocc,nvir,nocc,nocc), dtype=dtype)
+    else:
+        Wmbkj = None
+
+    if build_ea_t3p2:
+        Wacek = np.zeros((nvir,nvir,nvir,nocc), dtype=dtype)
+    else:
+        Wacek = None
+
+    tmp_t3  = np.einsum('abif,kjcf->ijkabc', eris_vvov, t2)
+    tmp_t3 -= np.einsum('aijm,mkbc->ijkabc', eris_vooo, t2)
+
+    tmp_t3 = (tmp_t3 + tmp_t3.transpose(0,2,1,3,5,4)
+                     + tmp_t3.transpose(1,0,2,4,3,5)
+                     + tmp_t3.transpose(1,2,0,4,5,3)
+                     + tmp_t3.transpose(2,0,1,5,3,4)
+                     + tmp_t3.transpose(2,1,0,5,4,3))
+
+    eia = foo[:, None] - fvv[None, :]
+    eijab = eia[:, None, :, None] + eia[None, :, None, :]
+    eijkabc = eijab[:, :, None, :, :, None] + eia[None, None, :, None, None, :]
+    tmp_t3 /= eijkabc
+
+    pt1 =  0.5 * lib.einsum('menf,imnaef->ia', ovov, 4.*tmp_t3)
+    pt1 -= 0.5 * lib.einsum('menf,minaef->ia', ovov, 2.*tmp_t3)
+    pt1 -= 0.5 * lib.einsum('menf,nmiaef->ia', ovov, 2.*tmp_t3)
+    pt1 -= 0.5 * lib.einsum('menf,inmaef->ia', ovov, 2.*tmp_t3)
+    pt1 += 0.5 * lib.einsum('menf,mniaef->ia', ovov, 1.*tmp_t3)
+    pt1 += 0.5 * lib.einsum('menf,nimaef->ia', ovov, 1.*tmp_t3)
+
+    tmp =  0.5 * lib.einsum('ijkabc,ia->jkbc', tmp_t3, 2.*fov)
+    tmp += 0.5 * lib.einsum('jikabc,ia->jkbc', tmp_t3, -fov)
+    tmp += 0.5 * lib.einsum('kjiabc,ia->jkbc', tmp_t3, -fov)
+    pt2 = tmp + tmp.transpose(1,0,3,2)
+
+    #     b\    / \    /
+    #  /\---\  /   \  /
+    # i\/a  d\/j   k\/c
+    # ------------------
+    tmp =  lib.einsum('ijkabc,iadb->jkdc', tmp_t3, 2.*ovvv)
+    tmp += lib.einsum('jikabc,iadb->jkdc', tmp_t3, -ovvv)
+    tmp += lib.einsum('kjiabc,iadb->jkdc', tmp_t3, -ovvv)
+    pt2 += (tmp + tmp.transpose(1,0,3,2))
+
+    #     m\    / \    /
+    #  /\---\  /   \  /
+    # i\/a  j\/b   k\/c
+    # ------------------
+    tmp =  lib.einsum('ijkabc,iajm->mkbc', tmp_t3, 2.*eris.ovoo)
+    tmp += lib.einsum('jikabc,iajm->mkbc', tmp_t3, -eris.ovoo)
+    tmp += lib.einsum('kjiabc,iajm->mkbc', tmp_t3, -eris.ovoo)
+    pt2 -= (tmp + tmp.transpose(1,0,3,2))
+
+    eia = foo[:, None] - fvv[None, :]
+    eijab = eia[:, None, :, None] + eia[None, :, None, :]
+
+    pt1 /= eia
+    pt2 /= eijab
+
+    pt1 += t1
+    pt2 += t2
+
+    Wmbkj =  lib.einsum('ijkabc,mcia->mbkj', tmp_t3, 2.*ovov)
+    Wmbkj += lib.einsum('jikabc,mcia->mbkj', tmp_t3, -ovov)
+    Wmbkj += lib.einsum('kjiabc,mcia->mbkj', tmp_t3, -ovov)
+
+    Wcbej =  lib.einsum('ijkabc,iake->cbej', tmp_t3, 2.*ovov)
+    Wcbej += lib.einsum('jikabc,iake->cbej', tmp_t3, -ovov)
+    Wcbej += lib.einsum('kjiabc,iake->cbej', tmp_t3, -ovov)
+    Wcbej = Wcbej * -1.
+
+    delta_ccsd_energy = ccsd.energy(eom, pt1, pt2, eris) - ccsd_energy
+    logger.info(eom, 'CCSD energy T3[2] correction : %14.8e', delta_ccsd_energy)
+    return delta_ccsd_energy, pt1, pt2, Wmbkj, Wcbej
+
 class _IMDS:
     def __init__(self, cc, eris=None):
         self.verbose = cc.verbose
         self.stdout = cc.stdout
         self.t1 = cc.t1
         self.t2 = cc.t2
+        self._cc = cc  # FIXME: find a way to remove me; maybe move energy call?
         if eris is None:
             eris = cc.ao2mo()
         self.eris = eris
         self._made_shared_2e = False
+        self._made_t3p2_correction = False
 
     def _make_shared_1e(self):
         cput0 = (time.clock(), time.time())
@@ -1598,19 +1741,19 @@ class _IMDS:
         cput0 = (time.clock(), time.time())
 
         t1, t2, eris = self.t1, self.t2, self.eris
-        #drv = get_t3p2_amplitude_contribution
-        #if (with_t3p2 or with_t3p2_imds) and (not self.made_t3p2_correction):
-        #    delta_ccsd_energy, t1, t2, Wmcik, Wacek = \
-        #        drv(self, t1, t2, eris=eris, copy_amps=copy_amps_t3p2,
-        #            build_t1_t2=with_t3p2, build_ip_t3p2=with_t3p2_imds,
-        #            build_ea_t3p2=with_t3p2_imds)
-        #    if with_t3p2_imds:
-        #        self.Wovoo_t3p2 = Wmcik
-        #        self.Wvvvo_t3p2 = Wacek
+        drv = get_t3p2_amplitude_contribution_slow
+        if (with_t3p2 or with_t3p2_imds) and (not self._made_t3p2_correction):
+            delta_ccsd_energy, t1, t2, Wmcik, Wacek = \
+                drv(self._cc, t1, t2, eris=eris, copy_amps=copy_amps_t3p2,
+                    build_t1_t2=with_t3p2, build_ip_t3p2=with_t3p2_imds,
+                    build_ea_t3p2=with_t3p2_imds)
+            if with_t3p2_imds:
+                self.Wovoo_t3p2 = Wmcik
+                self.Wvvvo_t3p2 = Wacek
 
-        #    self.t1 = t1
-        #    self.t2 = t2
-        #    self.made_t3p2_correction = True
+            self.t1 = t1
+            self.t2 = t2
+            self._made_t3p2_correction = True
 
         logger.timer_debug1(self, 'EOM-CCSD T3[2] intermediates', *cput0)
         return self

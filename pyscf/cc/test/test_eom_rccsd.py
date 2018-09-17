@@ -23,7 +23,7 @@ from pyscf import gto
 from pyscf import scf
 from pyscf import cc
 from pyscf import ao2mo
-from pyscf.cc import ccsd, rccsd, eom_rccsd
+from pyscf.cc import ccsd, rccsd, eom_rccsd, eom_gccsd
 
 mol = gto.Mole()
 mol.atom = [
@@ -111,7 +111,7 @@ class KnownValues(unittest.TestCase):
 
         myeom = eom_rccsd.EOMIP(mycc)
         lv = myeom.ipccsd(nroots=3, left=True)[1]
-        e = myeom.ipccsd_star(e, v, lv)
+        e = myeom._ipccsd_star(e, v, lv)
         self.assertAlmostEqual(e[0], 0.43793202122290747, 6)
         self.assertAlmostEqual(e[1], 0.52287073076243218, 6)
         self.assertAlmostEqual(e[2], 0.67994597799835099, 6)
@@ -162,7 +162,7 @@ class KnownValues(unittest.TestCase):
 
         myeom = eom_rccsd.EOMEA(mycc)
         lv = myeom.eaccsd(nroots=3, left=True)[1]
-        e = myeom.eaccsd_star(e, v, lv)
+        e = myeom._eaccsd_star(e, v, lv)
         self.assertAlmostEqual(e[0], 0.16656250872624662, 6)
         self.assertAlmostEqual(e[1], 0.2394414445283693, 6)
         self.assertAlmostEqual(e[2], 0.41399434356202935, 6)
@@ -378,7 +378,7 @@ class KnownValues(unittest.TestCase):
 
         myeom = eom_rccsd.EOMIP(mycc2)
         lv = myeom.ipccsd(nroots=3, left=True)[1]
-        e = myeom.ipccsd_star(e, v, lv)
+        e = myeom._ipccsd_star(e, v, lv)
         self.assertAlmostEqual(e[0], 0.43793202122290747, 6)
         self.assertAlmostEqual(e[1], 0.52287073076243218, 6)
         self.assertAlmostEqual(e[2], 0.67994597799835099, 6)
@@ -405,6 +405,53 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(e[1], 0.50992428154417802, 6)
         self.assertAlmostEqual(e[2], 0.67006510349161119, 6)
 
+    def test_rand_t3p2_high_cost(self):
+        myeom_rand = eom_rccsd.EOMIP(mycc1)
+        erccsd = eom_rccsd.get_t3p2_amplitude_contribution_slow(myeom_rand, mycc1.t1, mycc1.t2, eris=None, copy_amps=True,
+                    build_t1_t2=True, build_ip_t3p2=False, build_ea_t3p2=False)[0]
+
+        so_cc1 = cc.addons.convert_to_gccsd(mycc1)
+        so_myeom_rand = eom_gccsd.EOMIP(so_cc1)
+        egccsd =  eom_gccsd.get_t3p2_amplitude_contribution_slow(so_myeom_rand, so_cc1.t1, so_cc1.t2, eris=None, copy_amps=True,
+                    build_t1_t2=True, build_ip_t3p2=False, build_ea_t3p2=False)[0]
+        self.assertAlmostEqual(erccsd, 8.45616551e+03, 4)
+        self.assertAlmostEqual(egccsd, 8.45616551e+03, 4)
+
+    def test_h2o_star(self):
+        mol_n2 = gto.Mole()
+        mol_n2.atom = [
+                [8, [0.000000000000000, -0.000000000000000, -0.124143731294022]],
+                [1, [0.000000000000000, -1.430522735894536,  0.985125550040314]],
+                [1, [0.000000000000000,  1.430522735894536,  0.985125550040314]]]
+        mol_n2.unit = 'B'
+        mol_n2.basis = '3-21g'
+        #mol_n2.output = '/dev/null'
+        mol_n2.verbose = 7
+        mol_n2.build()
+        mol.conv_tol = 1e-12
+        mf_n2 = scf.RHF(mol_n2)
+        mf_n2.conv_tol_grad = 1e-12
+        mf_n2.kernel()
+        mycc_n2 = cc.RCCSD(mf_n2)
+        mycc_n2.conv_tol_normt = 1e-12
+        mycc_n2.kernel()
+
+        myeom = eom_rccsd.EOMIP(mycc_n2)
+        e = myeom.ipccsd_star(nroots=1)
+        self.assertAlmostEqual(e[0], 0.41066198624702982, 7)  # CFOUR: 0.41066196630606711,      error ~1e-8
+
+        myeom = eom_rccsd.EOMEA(mycc_n2)
+        e = myeom.eaccsd_star(nroots=1)
+        self.assertAlmostEqual(e[0], 0.25058983731814427, 7)  # CFOUR: 0.25058985399561007,      error ~1e-8
+
+        myeom = eom_rccsd.EOMIP(mycc_n2)
+        e = myeom.ipccsd_t_a_star(nroots=2)
+        self.assertAlmostEqual(e[0], 0.41171981379097428, 7)  # CFOUR: 0.41169584994017255,      error ~2e-5
+
+        myeom = eom_rccsd.EOMEA(mycc_n2)
+        e = myeom.eaccsd_t_a_star(nroots=2)
+        self.assertAlmostEqual(e[0], 0.25075321333964473, 7)  # CFOUR: 0.25072181725671577,      error ~3e-5
+
 
     def test_eaccsd2(self):
         e,v = mycc2.eaccsd(nroots=1)
@@ -417,7 +464,7 @@ class KnownValues(unittest.TestCase):
 
         myeom = eom_rccsd.EOMEA(mycc2)
         lv = myeom.eaccsd(nroots=3, left=True)[1]
-        e = myeom.eaccsd_star(e, v, lv)
+        e = myeom._eaccsd_star(e, v, lv)
         self.assertAlmostEqual(e[0], 0.16656250872624662, 6)
         self.assertAlmostEqual(e[1], 0.2394414445283693, 6)
         self.assertAlmostEqual(e[2], 0.41399434356202935, 6)
@@ -577,7 +624,7 @@ class KnownValues(unittest.TestCase):
 
         myeom = eom_rccsd.EOMIP(mycc3)
         lv = myeom.ipccsd(nroots=3, left=True)[1]
-        e = myeom.ipccsd_star(e, v, lv)
+        e = myeom._ipccsd_star(e, v, lv)
         self.assertAlmostEqual(e[0], 0.43793202122290747, 6)
         self.assertAlmostEqual(e[1], 0.52287073076243218, 6)
         self.assertAlmostEqual(e[2], 0.67994597799835099, 6)
