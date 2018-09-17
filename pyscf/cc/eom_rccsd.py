@@ -229,6 +229,8 @@ def ipccsd(eom, nroots=1, left=False, koopmans=False, guess=None,
     if partition is not None:
         eom.partition = partition.lower()
         assert eom.partition in ['mp','full']
+    else:
+        eom.partition = partition
     eom.converged, eom.e, eom.v \
             = kernel(eom, nroots, koopmans, guess, left, eris=eris, imds=imds)
     return eom.e, eom.v
