@@ -183,11 +183,94 @@ class KnownValues(unittest.TestCase):
         n = 9
         cell = make_test_cell.test_cell_n1(L,[n]*3)
         nk = (3, 1, 1)
+
+        abs_kpts = cell.make_kpts(nk, wrap_around=True)
+        kmf = pbcscf.KRHF(cell, abs_kpts, exxdiv=None)
+        kmf.conv_tol = 1e-14
+        escf = kmf.scf()
+
+        cc = pyscf.pbc.cc.kccsd_rhf.RCCSD(kmf)
+        cc.conv_tol=1e-14
+        cc.verbose = 7
+        ecc, t1, t2 = cc.kernel()
+
         hf_311 = -0.92687629918229486
         cc_311 = -0.042702177586414237
-        escf, ecc = run_kcell(cell,n,nk)
         self.assertAlmostEqual(escf,hf_311, 9)
         self.assertAlmostEqual(ecc, cc_311, 6)
+
+        # IP
+        ew, ev = cc.ipccsd(nroots=1, kptlist=[0], partition='mp')
+        self.assertAlmostEqual(ew[0][0], 0.1961932627711932, 6)
+        lew, lev = cc.ipccsd(nroots=1, left=True, kptlist=[0], partition='mp')
+        self.assertAlmostEqual(lew[0][0], 0.1961932627711932, 6)
+
+        ew, ev = cc.ipccsd(nroots=3, kptlist=[0])
+        self.assertAlmostEqual(ew[0][0], 0.1858896225849556, 6)
+        self.assertAlmostEqual(ew[0][1], 0.3079196211332019, 6)
+        lew, lev = cc.ipccsd(nroots=3, left=True, kptlist=[0])
+        self.assertAlmostEqual(lew[0][0], 0.1858896225849556, 6)
+        self.assertAlmostEqual(lew[0][1], 0.3079196211332019, 6)
+
+        ew_star = cc._ipccsd_star(ew, ev, lev, kptlist=[0])
+        self.assertAlmostEqual(ew_star[0][0], 0.18211313999415324, 6)
+
+        # EA
+        ew, ev = cc.eaccsd(nroots=1, kptlist=[0], partition='mp')
+        self.assertAlmostEqual(ew[0][0], 0.2824268532045, 6)
+        lew, lev = cc.eaccsd(nroots=1, left=True, kptlist=[0], partition='mp')
+        self.assertAlmostEqual(lew[0][0], 0.2824268532045, 6)
+
+        ew, ev = cc.eaccsd(nroots=3, kptlist=[0])
+        self.assertAlmostEqual(ew[0][0], 0.2637778932106498, 6)
+        self.assertAlmostEqual(ew[0][1], 0.2891321169290987, 6)
+        lew, lev = cc.eaccsd(nroots=3, left=True, kptlist=[0])
+        self.assertAlmostEqual(ew[0][0], 0.2637778932106498, 6)
+        self.assertAlmostEqual(ew[0][1], 0.2891321169290987, 6)
+
+        ew_star = cc._eaccsd_star(ew, ev, lev, kptlist=[0])
+        self.assertAlmostEqual(ew_star[0][0], 0.25555498958252826, 6)
+
+        check_gamma = True  # Turn me on to run the supercell calculation!
+
+        if check_gamma:
+            from pyscf.pbc.tools.pbc import super_cell
+            from pyscf.cc import eom_rccsd
+            supcell = super_cell(cell, nk)
+            kmf = pbcscf.RHF(supcell, exxdiv=None)
+            ehf = kmf.scf()
+
+            mycc = pbcc.RCCSD(kmf)
+            mycc.conv_tol = 1e-8
+            ecc, t1, t2 = mycc.kernel()
+
+            self.assertAlmostEqual(ecc/np.prod(nk), cc_311)
+
+            # IP
+            myeom = eom_rccsd.EOMIP(mycc)
+            ew, ev = myeom.ipccsd(nroots=3, partition='mp')
+            self.assertAlmostEqual(ew[2], 0.1961932627711932, 6)
+            lew, lev = myeom.ipccsd(nroots=3, left=True, partition='mp')
+            self.assertAlmostEqual(lew[2], 0.1961932627711932, 6)
+
+            ew, ev = myeom.ipccsd(nroots=3)
+            lew, lev = myeom.ipccsd(nroots=3, left=True)
+
+            ew_star = myeom._ipccsd_star(ew[2], ev[2], lev[2])
+            self.assertAlmostEqual(ew_star[0], 0.18211313999415324, 6)
+
+            # EA
+            myeom = eom_rccsd.EOMEA(mycc)
+            ew, ev = myeom.eaccsd(nroots=3, partition='mp')
+            self.assertAlmostEqual(ew[2], 0.2824268532045, 6)
+            lew, lev = myeom.eaccsd(nroots=3, left=True, partition='mp')
+            self.assertAlmostEqual(lew[2], 0.2824268532045, 6)
+
+            ew, ev = myeom.eaccsd(nroots=3)
+            lew, lev = myeom.eaccsd(nroots=3, left=True)
+
+            ew_star = myeom._eaccsd_star(ew[2], ev[2], lev[2])
+            self.assertAlmostEqual(ew_star[0], 0.25555498958252826, 6)
 
     def test_single_kpt(self):
         cell = pbcgto.Cell()
