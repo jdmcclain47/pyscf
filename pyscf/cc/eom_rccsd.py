@@ -181,7 +181,7 @@ def kernel_t_a_star(eom, nroots=1, koopmans=False, right_guess=None,
         D. A. Matthews, J. F. Stanton "A new approach to approximate..."
             JCP 145, 124102 (2016), Equation 14
     """
-    return pkernel(eom, nroots=1, koopmans=koopmans,
+    return pkernel(eom, nroots=nroots, koopmans=koopmans,
                    right_guess=right_guess, left_guess=left_guess,
                    eris=eris, imds=imds, type1=type1,
                    type2=type2, with_t3p2=True, with_t3p2_imds=True)
@@ -199,7 +199,7 @@ def kernel_star(eom, nroots=1, koopmans=False, right_guess=None,
         e_t_a_star (list of float):
             The EA-CCSD* energy.
     """
-    return pkernel(eom, nroots=1, koopmans=koopmans,
+    return pkernel(eom, nroots=nroots, koopmans=koopmans,
                    right_guess=right_guess, left_guess=left_guess,
                    eris=eris, imds=imds, type1=type1,
                    type2=type2, with_t3p2=False, with_t3p2_imds=False)
@@ -1739,12 +1739,14 @@ class _IMDS:
         with_t3p2_imds = kwargs.pop('with_t3p2_imds', False)
         if kwargs:
             raise TypeError('Unexpected **kwargs: %r' % kwargs)
+        if not (with_t3p2 or with_t3p2_imds):
+            return self
 
         cput0 = (time.clock(), time.time())
 
         t1, t2, eris = self.t1, self.t2, self.eris
         drv = get_t3p2_amplitude_contribution_slow
-        if (with_t3p2 or with_t3p2_imds) and (not self._made_t3p2_correction):
+        if (not self._made_t3p2_correction):
             delta_ccsd_energy, t1, t2, Wmcik, Wacek = \
                 drv(self._cc, t1, t2, eris=eris, copy_amps=copy_amps_t3p2,
                     build_t1_t2=with_t3p2, build_ip_t3p2=with_t3p2_imds,
