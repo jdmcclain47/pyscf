@@ -678,17 +678,20 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         else:
             matvec = lambda _arg: self.ipccsd_matvec(_arg, kshift, **kwargs)
 
-        # Initialize intermediates
-        with_t3p2 = kwargs.pop('with_t3p2', False)
-        copy_amps_t3p2 = kwargs.pop('copy_amps_t3p2', True)
-        with_t3p2_imds = kwargs.pop('with_t3p2_imds', False)
-        if kwargs:
-            raise TypeError('Unexpected **kwargs: %r' % kwargs)
+        ## Initialize intermediates
+        #with_t3p2 = kwargs.pop('with_t3p2', False)
+        #copy_amps_t3p2 = kwargs.pop('copy_amps_t3p2', True)
+        #with_t3p2_imds = kwargs.pop('with_t3p2_imds', False)
+        #if kwargs:
+        #    raise TypeError('Unexpected **kwargs: %r' % kwargs)
+        #if not hasattr(self, 'imds'):
+        #    self.imds = _IMDS(self, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
         if not hasattr(self, 'imds'):
-            self.imds = _IMDS(self, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
+            self.imds = _IMDS(self, with_t3p2=kwargs.get('with_t3p2', False),
+                                    with_t3p2_imds=kwargs.get('with_t3p2_imds', False))
 
         for k, kshift in enumerate(kptlist):
-            adiag = self.ipccsd_diag(kshift)
+            adiag = self.ipccsd_diag(kshift, **kwargs)
             adiag = self.mask_frozen_ip(adiag, kshift, const=LARGE_DENOM)
             if partition == 'full':
                 self._ipccsd_diag_matrix2 = self.ip_vector_to_amplitudes(adiag)[1]
@@ -764,7 +767,7 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
                 self.imds = imds
         self.imds.ip_partition = self.ip_partition
         if not self.imds.made_ip_imds:
-            self.imds.make_ip(self.ip_partition)
+            self.imds.make_ip(self.ip_partition, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
         imds = self.imds
 
         vector = self.mask_frozen_ip(vector, kshift, const=0.0)
@@ -840,7 +843,7 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
                 self.imds = imds
         self.imds.ip_partition = self.ip_partition
         if not self.imds.made_ip_imds:
-            self.imds.make_ip(self.ip_partition)
+            self.imds.make_ip(self.ip_partition, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
         imds = self.imds
 
         vector = self.mask_frozen_ip(vector, kshift, const=0.0)
@@ -1205,7 +1208,7 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
             self.imds = _IMDS(self, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
         self.imds.ip_partition = self.ip_partition
         if not self.imds.made_ip_imds:
-            self.imds.make_ip(self.ip_partition)
+            self.imds.make_ip(self.ip_partition, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
         imds = self.imds
 
         t1, t2 = self.t1, self.t2
@@ -1306,19 +1309,15 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
         evecs = np.zeros((len(kptlist), nroots, size), np.complex)
 
         # Initialize intermediates
-        with_t3p2 = kwargs.pop('with_t3p2', False)
-        copy_amps_t3p2 = kwargs.pop('copy_amps_t3p2', True)
-        with_t3p2_imds = kwargs.pop('with_t3p2_imds', False)
-        if kwargs:
-            raise TypeError('Unexpected **kwargs: %r' % kwargs)
         if not hasattr(self, 'imds'):
-            self.imds = _IMDS(self, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
+            self.imds = _IMDS(self, with_t3p2=kwargs.get('with_t3p2', False),
+                                    with_t3p2_imds=kwargs.get('with_t3p2_imds', False))
 
         for k, kshift in enumerate(kptlist):
             if left:
-                matvec = lambda _arg: self.leaccsd_matvec(_arg, kshift)
+                matvec = lambda _arg: self.leaccsd_matvec(_arg, kshift, **kwargs)
             else:
-                matvec = lambda _arg: self.eaccsd_matvec(_arg, kshift)
+                matvec = lambda _arg: self.eaccsd_matvec(_arg, kshift, **kwargs)
 
             adiag = self.eaccsd_diag(kshift)
             adiag = self.mask_frozen_ea(adiag, kshift, const=LARGE_DENOM)
@@ -1394,7 +1393,7 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
             else:
                 self.imds = imds
         if not self.imds.made_ea_imds:
-            self.imds.make_ea(self.ea_partition)
+            self.imds.make_ea(self.ea_partition, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
         imds = self.imds
 
         vector = self.mask_frozen_ea(vector, kshift, const=0.0)
@@ -1477,7 +1476,7 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
             else:
                 self.imds = imds
         if not self.imds.made_ea_imds:
-            self.imds.make_ea(self.ea_partition)
+            self.imds.make_ea(self.ea_partition, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
         imds = self.imds
 
         vector = self.mask_frozen_ea(vector, kshift, const=0.0)
@@ -1556,7 +1555,7 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
             self.imds = _IMDS(self, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
         self.imds.ea_partition = self.ea_partition
         if not self.imds.made_ea_imds:
-            self.imds.make_ea(self.ea_partition)
+            self.imds.make_ea(self.ea_partition, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
         imds = self.imds
 
         t1, t2 = self.t1, self.t2
@@ -2179,6 +2178,7 @@ class _IMDS(object):
         else:
             self.t1 = cc.t1
             self.t2 = cc.t2
+        self._cc = cc  # TODO: delete me
         self.eris = cc.eris
         self.kconserv = cc.khelper.kconserv
         self.made_ip_imds = False
@@ -2188,6 +2188,11 @@ class _IMDS(object):
         self._fimd = lib.H5TmpFile() if hasattr(self.eris, "feri1") else None
         self._ip_partition = None
         self._ea_partition = None
+        self._made_t3p2_correction = False
+
+        self.with_t3p2 = with_t3p2
+        self.with_t3p2_imds = with_t3p2_imds
+        self.copy_amps_t3p2 = copy_amps_t3p2
 
     def _make_shared_1e(self):
         cput0 = (time.clock(), time.time())
@@ -2222,8 +2227,9 @@ class _IMDS(object):
 
         log.timer('EOM-CCSD shared two-electron intermediates', *cput0)
 
-    def make_ip(self, ip_partition=None):
+    def make_ip(self, ip_partition=None, **kwargs):
         self.ip_partition = ip_partition
+        self.make_t3p2_imds(**kwargs)
         self._make_shared_1e()
         if self._made_shared_2e is False and ip_partition != 'mp':
             self._make_shared_2e()
@@ -2251,8 +2257,38 @@ class _IMDS(object):
         self.made_ip_imds = True
         log.timer('EOM-CCSD IP intermediates', *cput0)
 
-    def make_ea(self, ea_partition=None):
+    def make_t3p2_imds(self, **kwargs):
+        with_t3p2 = kwargs.get('with_t3p2', False)
+        copy_amps_t3p2 = kwargs.get('copy_amps_t3p2', True)
+        with_t3p2_imds = kwargs.get('with_t3p2_imds', False)
+        #if kwargs:
+        #    raise TypeError('Unexpected **kwargs: %r' % kwargs)
+        if not (with_t3p2 or with_t3p2_imds):
+            return self
+
+        cput0 = (time.clock(), time.time())
+
+        t1, t2, eris = self.t1, self.t2, self.eris
+        drv = imd.get_t3p2_amplitude_contribution_slow
+        if (not self._made_t3p2_correction):
+            delta_ccsd_energy, t1, t2, Wmcik, Wacek = \
+                drv(self._cc, t1, t2, eris=eris, copy_amps=copy_amps_t3p2,
+                    build_t1_t2=with_t3p2, build_ip_t3p2=with_t3p2_imds,
+                    build_ea_t3p2=with_t3p2_imds)
+            if with_t3p2_imds:
+                self.Wovoo_t3p2 = Wmcik
+                self.Wvvvo_t3p2 = Wacek
+
+            self.t1 = t1
+            self.t2 = t2
+            self._made_t3p2_correction = True
+
+        logger.timer_debug1(self, 'EOM-CCSD T3[2] intermediates', *cput0)
+        return self
+
+    def make_ea(self, ea_partition=None, **kwargs):
         self.ea_partition = ea_partition
+        self.make_t3p2_imds(**kwargs)
         self._make_shared_1e()
         if self._made_shared_2e is False and ea_partition != 'mp':
             self._make_shared_2e()
