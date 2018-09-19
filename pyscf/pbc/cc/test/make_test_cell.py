@@ -130,7 +130,6 @@ def test_cell_n3_diffuse():
     cell.build()
     return cell
 
-
 def test_cell_cu_metallic(mesh=[9]*3):
     """
     Copper unit cell w/ special basis giving non-equal number of occupied orbitals per k-point
