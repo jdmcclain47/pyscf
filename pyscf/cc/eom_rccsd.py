@@ -1623,12 +1623,9 @@ def get_t3p2_amplitude_contribution_slow(eom, t1, t2, eris=None, copy_amps=True,
     eijkabc = eijab[:, :, None, :, :, None] + eia[None, None, :, None, None, :]
     tmp_t3 /= eijkabc
 
-    pt1 =  0.5 * lib.einsum('menf,imnaef->ia', ovov, 4.*tmp_t3)
-    pt1 -= 0.5 * lib.einsum('menf,minaef->ia', ovov, 2.*tmp_t3)
-    pt1 -= 0.5 * lib.einsum('menf,nmiaef->ia', ovov, 2.*tmp_t3)
-    pt1 -= 0.5 * lib.einsum('menf,inmaef->ia', ovov, 2.*tmp_t3)
-    pt1 += 0.5 * lib.einsum('menf,mniaef->ia', ovov, 1.*tmp_t3)
-    pt1 += 0.5 * lib.einsum('menf,nimaef->ia', ovov, 1.*tmp_t3)
+    pt1 =  0.5 * lib.einsum('jbkc,ijkabc->ia', 2.*ovov - ovov.transpose(0,3,2,1), 2.*tmp_t3)
+    pt1 -= 0.5 * lib.einsum('jbkc,jikabc->ia', 2.*ovov - ovov.transpose(0,3,2,1), 1.*tmp_t3)
+    pt1 -= 0.5 * lib.einsum('jbkc,kjiabc->ia', 2.*ovov - ovov.transpose(0,3,2,1), 1.*tmp_t3)
 
     tmp =  0.5 * lib.einsum('ijkabc,ia->jkbc', tmp_t3, 2.*fov)
     tmp += 0.5 * lib.einsum('jikabc,ia->jkbc', tmp_t3, -fov)
