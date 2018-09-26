@@ -28,6 +28,8 @@ from pyscf.cc import _ccsd
 from pyscf.cc import eom_rccsd
 from pyscf.pbc.tools.pbc import super_cell
 
+einsum = lib.einsum
+
 def _convert_to_int(kpt_indices):
     '''Convert all kpoint indices for 3-particle operator to integers.'''
     out_indices = [0]*6
@@ -169,7 +171,7 @@ class Condenser(object):
         del self.unique_job_args[job_name]
         self.offset = 0
 
-    #@profile
+    @profile
     def _submit(self, job_name):
         #logger.info(self, 'job %s reduced keys %d -> %d (%f percent)',
         #            job_name, len(self.job[job_name]), len(unique_job_args),
@@ -195,7 +197,7 @@ class Condenser(object):
 
 class DataHandler(Condenser):
     '''Wrapper for Condenser for our specific jobs'''
-    #@profile
+    @profile
     def results(self, job_name, func, args,
                 hash_func=_slice_to_hashable, unhash_func=_hashable_to_slice):
         if not isinstance(args, list):
@@ -208,7 +210,7 @@ class DataHandler(Condenser):
             out.append(self.job_results[job_name][k])
         return out
 
-    #@profile
+    @profile
     def request_data(self, kpt_indices, orb_indices, kconserv, *args):
         idx_args = get_data_slices(kpt_indices, orb_indices, kconserv)
         vvop_indices, vooo_indices, t2T_vvop_indices, t2T_vooo_indices = idx_args
@@ -257,9 +259,9 @@ def get_full_t3p2(cc, t1, t2, eris):
         def get_vijkabc(ki, kj, kk, ka, kb, kc):
             '''Build T3[2] for `ijkabc` at a given set of k-points'''
             kd = kconserv[kb, kk, kc]
-            ret = lib.einsum('dkbc,ijad->ijkabc', eris.vovv[kd, kk, kb].conj(), t2[ki, kj, ka])
+            ret = einsum('dkbc,ijad->ijkabc', eris.vovv[kd, kk, kb].conj(), t2[ki, kj, ka])
             km = kconserv[ka, ki, kb]
-            ret -= lib.einsum('jkmc,imab->ijkabc', eris.ooov[kj, kk, km].conj(), t2[ki, km, ka])
+            ret -= einsum('jkmc,imab->ijkabc', eris.ooov[kj, kk, km].conj(), t2[ki, km, ka])
             return ret
     else:
         t2T = np.zeros((nkpts,)*3 + (nvir,)*2 + (nocc,)*2, dtype=np.complex, order='C')
@@ -274,9 +276,9 @@ def get_full_t3p2(cc, t1, t2, eris):
         def get_vijkabc(ki, kj, kk, ka, kb, kc):
             '''Build T3[2] for `ijkabc` at a given set of k-points'''
             kd = kconserv[kb, kk, kc]
-            ret = lib.einsum('dkbc,ijad->ijkabc', eris.vovv[kd, kk, kb].conj(), t2[ki, kj, ka])
+            ret = einsum('dkbc,ijad->ijkabc', eris.vovv[kd, kk, kb].conj(), t2[ki, kj, ka])
             km = kconserv[kc, kk, kb]
-            ret -= lib.einsum('aijm,kmcb->ijkabc', eris_vooo_C[ka, ki, kj], t2[kk, km, kc])
+            ret -= einsum('aijm,kmcb->ijkabc', eris_vooo_C[ka, ki, kj], t2[kk, km, kc])
             return ret
 
     fock = eris.fock
@@ -318,9 +320,7 @@ def add_contribution_pt1(cc, kpt_indices, orb_indices, kconserv, data, out=None)
     if out is None:
         out = np.zeros((nocc,(a1-a0)), dtype=data)
     if ki == ka and kc == kconserv[kj, kb, kk]:
-        tmp =  0.5 * lib.einsum('jkbc,abcijk->ia', eris_Soovv, Ptmp_t3Tv)
-        tmp /= eaa
-        out += tmp
+        out += 0.5 * einsum('abcijk,jkbc->ia', Ptmp_t3Tv, eris_Soovv) / eaa
     return out
 
 def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
@@ -385,15 +385,9 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
     if build_ea_t3p2:
         Wcbej = np.zeros((nkpts,nkpts,nkpts,nvir,nvir,nvir,nocc), dtype=np.complex)
 
-    #tmp_t3 = np.zeros((nkpts,nkpts,nkpts,nkpts,nkpts,nocc,nocc,nocc,nvir,nvir,nvir), dtype=t2.dtype)
-    #get_t3_fast()
-
-    #@profile
+    @profile
     def get_t3_fast_new():
-        a0, a1 = 0, nvir
-        b0, b1 = 0, nvir
-        c0, c1 = 0, nvir
-
+        print 'creating temp arrays'
         if hasattr(eris, 'vvop'):
             eris_vvop = eris.vvop
             # vooo in chemist notation
@@ -419,6 +413,7 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
         fvo = np.asarray([fov[kpt].transpose(1,0) for kpt in range(nkpts)], order='C')
         fock = np.array([np.diag(x).real for x in eris.fock], dtype=np.float64)
         mo_energy = np.asarray(fock, order='C')
+        print 'done...'
 
         from pyscf.cc import _ccsd
         tasks = []
@@ -496,7 +491,32 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
                 data_ptrs)
             return t3T
 
-        full_t3v_ijk = get_full_t3p2(cc, t1, t2, eris)
+        def add_and_permute(kpt_indices, orb_indices, data):
+            '''Performs permutation and addition of t3 temporary arrays.'''
+            ki, kj, kk, ka, kb, kc = kpt_indices
+            a0, a1, b0, b1, c0, c1 = orb_indices
+            slices = np.array([a0, a1, b0, b1, c0, c1], dtype=np.int32)
+
+            mo_offset = np.array([ki*nmo, kj*nmo, kk*nmo,
+                                  ka*nmo, kb*nmo, kc*nmo], dtype=np.int32)
+
+            tmp_t3Tv_ijk = np.asarray(data[0], dtype=np.complex, order='C')
+            tmp_t3Tv_jik = np.asarray(data[1], dtype=np.complex, order='C')
+            tmp_t3Tv_kji = np.asarray(data[2], dtype=np.complex, order='C')
+
+            drv = _ccsd.libcc.MPICCadd_and_permute_t3T
+            drv(ctypes.c_int(nocc), ctypes.c_int(nvir),
+                tmp_t3Tv_ijk.ctypes.data_as(ctypes.c_void_p),
+                tmp_t3Tv_jik.ctypes.data_as(ctypes.c_void_p),
+                tmp_t3Tv_kji.ctypes.data_as(ctypes.c_void_p),
+                mo_offset.ctypes.data_as(ctypes.c_void_p),
+                slices.ctypes.data_as(ctypes.c_void_p))
+            # drv has overwritten tmp_t3Tv_ijk
+            Ptmp_t3Tv = tmp_t3Tv_ijk  #2.*t3Tv_ijk - t3Tv_jik.transpose(0,1,2,4,3,5)
+                                      #            - t3Tv_kji.transpose(0,1,2,5,4,3)
+            return Ptmp_t3Tv
+
+        #full_t3v_ijk = get_full_t3p2(cc, t1, t2, eris)
 
         fetcher = DataHandler()
         for ka, kb in product(range(nkpts), repeat=2):
@@ -558,20 +578,20 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
                     data2 = fetcher.get_data(kpt_indices[1], task, kconserv, *args)
                     data3 = fetcher.get_data(kpt_indices[2], task, kconserv, *args)
 
-                    tmp_t3Tv_ijk = contract_t3Tv(kpt_indices[0], task, data1)
-                    tmp_t3Tv_jik = contract_t3Tv(kpt_indices[1], task, data2)
-                    tmp_t3Tv_kji = contract_t3Tv(kpt_indices[2], task, data3)
+                    tmp_t3Tv_ijk = contract_t3Tv(kpt_indices[0],task,data1)
+                    tmp_t3Tv_jik = contract_t3Tv(kpt_indices[1],task,data2)
+                    tmp_t3Tv_kji = contract_t3Tv(kpt_indices[2],task,data3)
 
-                    new_tmp_t3Tv_ijk = full_t3v_ijk[ki,kj,kk,ka,kb].transpose(3,4,5,0,1,2)
-                    new_tmp_t3Tv_jik = full_t3v_ijk[kj,ki,kk,ka,kb].transpose(3,4,5,0,1,2)
-                    new_tmp_t3Tv_kji = full_t3v_ijk[kk,kj,ki,ka,kb].transpose(3,4,5,0,1,2)
-                    print 'diff', np.linalg.norm(tmp_t3Tv_ijk - new_tmp_t3Tv_ijk)
-                    tmp_t3Tv_ijk = new_tmp_t3Tv_ijk
-                    tmp_t3Tv_jik = new_tmp_t3Tv_jik
-                    tmp_t3Tv_kji = new_tmp_t3Tv_kji
+                    #new_tmp_t3Tv_ijk = full_t3v_ijk[ki,kj,kk,ka,kb].transpose(3,4,5,0,1,2)
+                    #new_tmp_t3Tv_jik = full_t3v_ijk[kj,ki,kk,ka,kb].transpose(3,4,5,0,1,2)
+                    #new_tmp_t3Tv_kji = full_t3v_ijk[kk,kj,ki,ka,kb].transpose(3,4,5,0,1,2)
+                    #print 'diff', np.linalg.norm(tmp_t3Tv_ijk - new_tmp_t3Tv_ijk)
+                    #tmp_t3Tv_ijk = new_tmp_t3Tv_ijk
+                    #tmp_t3Tv_jik = new_tmp_t3Tv_jik
+                    #tmp_t3Tv_kji = new_tmp_t3Tv_kji
 
-                    Ptmp_t3Tv = (2.*tmp_t3Tv_ijk - tmp_t3Tv_jik.transpose(0,1,2,4,3,5)
-                                                 - tmp_t3Tv_kji.transpose(0,1,2,5,4,3))
+                    Ptmp_t3Tv = add_and_permute(kpt_indices[0], task, (tmp_t3Tv_ijk,tmp_t3Tv_jik,tmp_t3Tv_kji))
+
                     # Performing contribution to pt1
                     eris_Soovv = None
                     if ki == ka and kc == kconserv[kj, kb, kk]:
@@ -581,15 +601,12 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
                     add_contribution_pt1(cc, kpt_indices[0], task, kconserv,
                                          (Ptmp_t3Tv,eris_Soovv,eaa[:,a0:a1]),
                                          out=pt1[ka,:,a0:a1])
-                    #if ki == ka and kc == kconserv[kj, kb, kk]:
-                    #    tmp = 0.5*lib.einsum('jkbc,abcijk->ia', eris_Soovv, Ptmp_t3Tv) / eaa[:,a0:a1]
-                    #    pt1[ka,:,a0:a1] += tmp
 
                     # Performing contribution to pt2
                     if ki == ka and kc == kconserv[kj, kb, kk]:
                         ejkbc = (foo[kj][:,None,None,None] + foo[kk][None,:,None,None] -
                                 fvv[kb,b0:b1][None,None,:,None] - fvv[kc,c0:c1][None,None,None,:])
-                        tmp = lib.einsum('abcijk,ia->jkbc', Ptmp_t3Tv, 0.5*fov[ki,:,a0:a1]) / ejkbc
+                        tmp = einsum('abcijk,ia->jkbc', Ptmp_t3Tv, 0.5*fov[ki,:,a0:a1]) / ejkbc
                         pt2[kj,kk,kb,:,:,b0:b1,c0:c1] += tmp
                         pt2[kk,kj,kc,:,:,c0:c1,b0:b1] += tmp.transpose(1,0,3,2)
 
@@ -598,7 +615,7 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
                     eris_vovv = eris.vovv[kd,ki,kb,:,:,b0:b1,a0:a1]
                     ejkdc = (foo[kj][:,None,None,None] + foo[kk][None,:,None,None] -
                              fvv[kd][None,None,:,None] - fvv[kc,c0:c1][None,None,None,:])
-                    tmp = lib.einsum('abcijk,diba->jkdc', Ptmp_t3Tv, eris_vovv) / ejkdc
+                    tmp = einsum('abcijk,diba->jkdc', Ptmp_t3Tv, eris_vovv) / ejkdc
                     pt2[kj,kk,kd,:,:,:,c0:c1] += tmp
                     pt2[kk,kj,kc,:,:,c0:c1,:] += tmp.transpose(1,0,3,2)
 
@@ -608,7 +625,7 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
                     # TODO: do transpose after in one-shot (rather than at each step?)
                     emkbc = (foo[km][:,None,None,None] + foo[kk][None,:,None,None] -
                             fvv[kb,b0:b1][None,None,:,None] - fvv[kc,c0:c1][None,None,None,:])
-                    tmp = lib.einsum('abcijk,jima->mkbc', Ptmp_t3Tv, eris_ooov) / emkbc
+                    tmp = einsum('abcijk,jima->mkbc', Ptmp_t3Tv, eris_ooov) / emkbc
                     pt2[km,kk,kb,:,:,b0:b1,c0:c1] -= tmp
                     pt2[kk,km,kc,:,:,c0:c1,b0:b1] -= tmp.transpose(1,0,3,2)
 
@@ -616,14 +633,14 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
                     if build_ip_t3p2:
                         km = kconserv[ka,ki,kc]
                         eris_oovv = eris.oovv[km,ki,kc]
-                        tmp = lib.einsum('abcijk,mica->mbkj', Ptmp_t3Tv, eris_oovv)
+                        tmp = einsum('abcijk,mica->mbkj', Ptmp_t3Tv, eris_oovv)
                         Wmbkj[km,kb,kk,:,b0:b1,:,:] += tmp
 
                     # Calculating Wvvvo array
                     if build_ea_t3p2:
                         ke = kconserv[ki,ka,kk]
                         eris_oovv = eris.oovv[ki,kk,ka]
-                        tmp = lib.einsum('abcijk,ikae->cbej', Ptmp_t3Tv, eris_oovv)
+                        tmp = einsum('abcijk,ikae->cbej', Ptmp_t3Tv, eris_oovv)
                         Wcbej[kc,kb,ke,:,c0:c1,b0:b1,:] -= tmp
 
                     fetcher.clean()
@@ -731,7 +748,7 @@ if __name__ == '__main__':
                 eom_rccsd.get_t3p2_amplitude_contribution_slow(myeom, mycc.t1, mycc.t2, eris=eris, build_t1_t2=True)
             real_pt1 = pt1.copy()
             real_pt2 = pt2.copy()
-            cdelta_ccsd_energy, cpt1, cpt2 = get_t3p2_amplitude_contribution(mykcc, mykcc.t1, mykcc.t2, eris=keris, copy_amps=True)
+            cdelta_ccsd_energy, cpt1, cpt2, _, _ = get_t3p2_amplitude_contribution(mykcc, mykcc.t1, mykcc.t2, eris=keris, copy_amps=True)
             print np.linalg.norm(cdelta_ccsd_energy - delta_ccsd_energy/np.prod(nk))
     else:
         def crand(shape):
@@ -740,7 +757,7 @@ if __name__ == '__main__':
 
         nmo = 40
         nocc = 15
-        nk = [2,1,1]
+        nk = [2,2,1]
         nvir = nmo - nocc
         def make_rand_kmf():
             # Not perfect way to generate a random mf.
