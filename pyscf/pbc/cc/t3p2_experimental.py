@@ -526,10 +526,11 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
                                                 [ki, kj, range(nkpts), ka, kb])
             for kk in range(nkpts):
                 oovv_jXX = eris.oovv[kj, :, :]
+                cput0 = (time.clock(), time.time())
+
                 for task_id, task in enumerate(tasks):
                     a0, a1, b0, b1, c0, c1 = task
 
-                    print ki, kj, kk, ka, kb, a0, a1, b0, b1, c0, c1
                     #tmp_t3Tv_ijk = np.empty(((kk1-kk0),(a1-a0),(b1-b0),(c1-c0),nocc,nocc,nocc), dtype=np.complex)
                     #tmp_t3Tv_jik = np.empty(((kk1-kk0),(a1-a0),(b1-b0),(c1-c0),nocc,nocc,nocc), dtype=np.complex)
                     #tmp_t3Tv_kji = np.empty(((kk1-kk0),(a1-a0),(b1-b0),(c1-c0),nocc,nocc,nocc), dtype=np.complex)
@@ -644,6 +645,7 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
                         Wcbej[kc,kb,ke,:,c0:c1,b0:b1,:] -= tmp
 
                     fetcher.clean()
+                logger.timer_debug1(cc, 'EOM-CCSD T3[2] (%d,%d,%d,%d,%d) [total=%d]'%(ki,kj,kk,ka,kb,nkpts**4), *cput0)
 
     get_t3_fast_new()
 
@@ -668,7 +670,7 @@ if __name__ == '__main__':
     3.370137329, 3.370137329, 0.000000000'''
     cell.unit = 'B'
     cell.precision = 1e-14
-    cell.verbose = 5
+    cell.verbose = 9
     cell.build()
 
     true_system = False
