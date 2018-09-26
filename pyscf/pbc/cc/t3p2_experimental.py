@@ -157,6 +157,9 @@ class Condenser(object):
 
     def add_job(self, job_name, func, arg,
                 hash_func=_slice_to_hashable, unhash_func=_hashable_to_slice):
+        '''Update list of jobs requested, unique jobs, and initialize dict
+        for results of these jobs.
+        '''
         if job_name not in self.job:
             self.job[job_name] = []
             self.unique_job_args[job_name] = set()
@@ -173,13 +176,15 @@ class Condenser(object):
 
     @profile
     def _submit(self, job_name):
-        #logger.info(self, 'job %s reduced keys %d -> %d (%f percent)',
-        #            job_name, len(self.job[job_name]), len(unique_job_args),
-        #            (1. - (1.*len(unique_job_args))/len(self.job[job_name]))*100)
+        unq_jobs = self.unique_job_args[job_name]
+        jobs = self.job[job_name]
+        #logger.debug3(self, 'job %s reduced keys %d -> %d (%f percent)',
+        #              job_name, len(jobs), len(unq_jobs),
+        #              (1. - (1.*len(unq_jobs))/len(jobs))*100)
 
         # Submit only unique arguments that we don't have results for
         dict_ = self.job_results[job_name]
-        for k in self.unique_job_args[job_name] ^ set(dict_.keys()):
+        for k in unq_jobs ^ set(dict_.keys()):
             func = k[0]
             unhash_func = k[1]
             arg = unhash_func(*k[2:])
@@ -240,7 +245,7 @@ class DataHandler(Condenser):
         jobs = ['vvop', 'vooo', 't2Tvvop', 't2Tvooo']
         for j in jobs:
             if len(self.job[j]) > self.NMAX:
-                #logger.info(self, 'Clearing cache for job %s', j)
+                #logger.debug3(self, 'Clearing cache for job %s', j)
                 self._delete_job(j)
         return
 
@@ -323,9 +328,90 @@ def add_contribution_pt1(cc, kpt_indices, orb_indices, kconserv, data, out=None)
         out += 0.5 * einsum('abcijk,jkbc->ia', Ptmp_t3Tv, eris_Soovv) / eaa
     return out
 
+@profile
+def transpose_t2(t2, nkpts, nocc, nvir, kconserv, out=None):
+    '''Creates t2.transpose(2,3,1,0).'''
+    if out is None:
+        out = np.empty((nkpts,nkpts,nkpts,nvir,nvir,nocc,nocc), dtype=t2.dtype)
+
+    if len(t2.shape) == 7 and t2.shape[:2] == (nkpts, nkpts):
+        for ki, kj, ka in product(range(nkpts), repeat=3):
+            kb = kconserv[ki,ka,kj]
+            out[ka,kb,kj] = t2[ki,kj,ka].transpose(2,3,1,0)
+    elif len(t2.shape) == 6 and t2.shape[:2] == (nkpts*(nkpts+1)//2, nkpts):
+        if isinstance(out, h5py.Dataset):  # Can't do multiple indexing vectors
+            for ki, kj, ka in product(range(nkpts), repeat=3):
+                kb = kconserv[ki,ka,kj]
+                # t2[ki,kj,ka] = t2[tril_index(ki,kj),ka]  ki<kj
+                # t2[kj,ki,kb] = t2[ki,kj,ka].transpose(1,0,3,2)  ki<kj
+                #              = t2[tril_index(ki,kj),ka].transpose(1,0,3,2)
+                tril_idx = (kj*(kj+1))//2 + ki
+                out[ka,kb,kj] = t2[tril_idx,ka].transpose(2,3,1,0).copy()
+                out[kb,ka,ki] = t2[tril_idx,ka].transpose(3,2,0,1).copy()
+        else:
+            for ka in range(nkpts):
+                idx0, idx1 = np.tril_indices(nkpts)
+                kb = kconserv[idx0,ka,idx1]
+                out[ka,kb,idx0] = t2[:,ka].transpose(0,3,4,2,1)
+                out[kb,ka,idx1] = t2[:,ka].transpose(0,4,3,1,2)
+    else:
+        raise ValueError('No known conversion for t2 shape %s' % t2.shape)
+    return out
+
+def create_eris_vvop(vovv, nkpts, nocc, nvir, kconserv, out=None):
+    '''Creates vvop from vovv array.'''
+    nmo = nocc + nvir
+    assert(vovv.shape == (nkpts,nkpts,nkpts,nvir,nocc,nvir,nvir))
+    if out is None:
+        out = np.empty((nkpts,nkpts,nkpts,nvir,nvir,nocc,nmo), dtype=vovv.dtype)
+    else:
+        assert(out.shape == (nkpts,nkpts,nkpts,nvir,nvir,nocc,nmo))
+
+    for ki, kj, ka in product(range(nkpts), repeat=3):
+        kb = kconserv[ki,ka,kj]
+        out[ki,kj,ka,:,:,:,nocc:] = vovv[kb,ka,kj].conj().transpose(3,2,1,0)
+    return out
+
+def create_eris_vooo(ooov, nkpts, nocc, nvir, kconserv, out=None):
+    '''Creates vooo from ooov array.
+
+    This is not exactly chemist's notation, but close.  Here vooo is
+    created from ooov, and then the last two indices of vooo are swapped.
+    '''
+    assert(ooov.shape == (nkpts,nkpts,nkpts,nocc,nocc,nocc,nvir))
+    if out is None:
+        out = np.empty((nkpts,nkpts,nkpts,nvir,nocc,nocc,nocc), dtype=ooov.dtype)
+
+    for ki, kj, ka in product(range(nkpts), repeat=3):
+        kb = kconserv[ki,ka,kj]
+        out[ki,kj,kb] = ooov[kb,kj,ka].conj().transpose(3,1,0,2)
+    return out
+
+def _add_pt2(pt2, nkpts, kconserv, kpt_indices, orb_indices, val):
+    ki, kj, ka = kpt_indices
+    kb = kconserv[ki,ka,kj]
+    idxi, idxj, idxa, idxb = [slice(None, None)
+                              if x is None else slice(x[0],x[1])
+                              for x in orb_indices]
+    if len(pt2.shape) == 7 and pt2.shape[:2] == (nkpts, nkpts):
+        pt2[ki,kj,ka,idxi,idxj,idxa,idxb] += val
+        pt2[kj,ki,kb,idxi,idxj,idxb,idxa] += val.transpose(1,0,3,2)
+    elif len(pt2.shape) == 6 and pt2.shape[:2] == (nkpts*(nkpts+1)//2, nkpts):
+        if ki <= kj:
+            idx = (kj*(kj+1))//2 + ki
+            pt2[idx,ka,idxi,idxj,idxa,idxb] += val
+            if ki == kj:
+                pt2[idx,kb,idxj,idxi,idxb,idxa] += val.transpose(1,0,3,2)
+        else:
+            idx = (ki*(ki+1))//2 + kj
+            pt2[idx,kb,idxj,idxi,idxb,idxa] += val.transpose(1,0,3,2)
+    else:
+        raise ValueError('No known conversion for t2 shape %s' % t2.shape)
+
 def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
                                     build_t1_t2=True, build_ip_t3p2=False,
-                                    build_ea_t3p2=False):
+                                    build_ea_t3p2=False, Wmbkj_out=None,
+                                    Wcbej_out=None):
     """Calculates T1, T2 amplitudes corrected by second-order T3 contribution
 
     Args:
@@ -349,6 +435,10 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
             Perturbatively corrected T1 amplitudes.
         pt2 (:obj:`ndarray`):
             Perturbatively corrected T2 amplitudes.
+
+    Notes:
+        If specifying `Wmbkj_out` or `Wcbej_out`, these passing in arrays should
+        not be empty; their values should be initialized.
 
     Reference:
         D. A. Matthews, J. F. Stanton "A new approach to approximate..."
@@ -377,38 +467,40 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
         pt1 = t1
         pt2 = t2
 
-    Wmbkj = None
-    if build_ip_t3p2:
-        Wmbkj = np.zeros((nkpts,nkpts,nkpts,nocc,nvir,nocc,nocc), dtype=np.complex)
+    #lower_pt2 = np.empty((nkpts*(nkpts+1)//2,nkpts,nocc,nocc,nvir,nvir), dtype=t2.dtype)
+    #for ki,kj,ka in product(range(nkpts), repeat=3):
+    #    if ki <= kj:
+    #        lower_pt2[kj*(kj+1)//2+ki,ka] = pt2[ki,kj,ka]
+    #pt2 = lower_pt2.copy()
+    #ccsd_energy = cc.energy(pt1, pt2, eris)
+    #print 'initial energy', ccsd_energy, pt2.shape
 
-    Wcbej = None
-    if build_ea_t3p2:
-        Wcbej = np.zeros((nkpts,nkpts,nkpts,nvir,nvir,nvir,nocc), dtype=np.complex)
+    Wmbkj_out = None
+    if build_ip_t3p2 and (Wmbkj_out is None):
+        Wmbkj_out = np.zeros((nkpts,nkpts,nkpts,nocc,nvir,nocc,nocc), dtype=np.complex)
 
-    @profile
+    Wcbej_out = None
+    if build_ea_t3p2 and (Wcbej_out is None):
+        Wcbej_out = np.zeros((nkpts,nkpts,nkpts,nvir,nvir,nvir,nocc), dtype=np.complex)
+
+    #@profile
     def get_t3_fast_new():
         print 'creating temp arrays'
-        if hasattr(eris, 'vvop'):
+        ftmp = None
+        if hasattr(eris, 'vvop') and hasattr(eris, 'eris_vooo_C'):
             eris_vvop = eris.vvop
-            # vooo in chemist notation
-            eris_vooo = eris.vooo
             eris_vooo_C = eris.vooo_C
         else:
-            eris_vvop = np.zeros((nkpts,)*3 + (nvir,)*2 + (nocc, nmo), dtype=np.complex, order='C')
-            # vooo in chemist notation
-            eris_vooo = np.zeros((nkpts,)*3 + (nvir,) + (nocc,)*3, dtype=np.complex, order='C')
-            eris_vooo_C = np.zeros((nkpts,)*3 + (nvir,) + (nocc,)*3, dtype=np.complex, order='C')
-            t2T = np.zeros((nkpts,)*3 + (nvir,)*2 + (nocc,)*2, dtype=np.complex, order='C')
-            for ki, kj, ka in product(range(nkpts), repeat=3):
-                kb = kconserv[ki, ka, kj]
-                eris_vvop[ki,kj,ka,:,:,:,nocc:] = eris.vovv[kb,ka,kj].conj().transpose(3,2,1,0)
-                eris_vooo[ki,ka,kj] = eris.ooov[kb,kj,ka].conj().transpose(3,2,1,0)
-                #eris_vooo_C[ki,kj,ka] = eris.ooov[kb,kj,ka].conj().transpose(3, 1, 2, 0)
-                eris_vooo_C[ki,kj,kb] = eris.ooov[kb,kj,ka].conj().transpose(3, 1, 2, 0).transpose(0,1,3,2)
-        t2T = np.zeros((nkpts,)*3 + (nvir,)*2 + (nocc,)*2, dtype=np.complex, order='C')
-        for ki, kj, ka in product(range(nkpts), repeat=3):
-            kb = kconserv[ki,ka,kj]
-            t2T[ka,kb,kj] = t2[ki,kj,ka].transpose(2,3,1,0)
+            ftmp = lib.H5TmpFile()
+            dtype = np.complex
+            t2T_out = ftmp.create_dataset('t2T', (nkpts,nkpts,nkpts,nvir,nvir,nocc,nocc), dtype=dtype)
+            eris_vvop_out = ftmp.create_dataset('vvop', (nkpts,nkpts,nkpts,nvir,nvir,nocc,nmo), dtype=dtype)
+            eris_vooo_C_out = ftmp.create_dataset('vooo_C', (nkpts,nkpts,nkpts,nvir,nocc,nocc,nocc), dtype=dtype)
+
+            t2T = transpose_t2(t2, nkpts, nocc, nvir, kconserv, out=t2T_out)
+            eris_vvop = create_eris_vvop(eris.vovv, nkpts, nocc, nvir, kconserv, out=eris_vvop_out)
+            eris_vooo_C = create_eris_vooo(eris.ooov, nkpts, nocc, nvir, kconserv, out=eris_vooo_C_out)
+
         t1T = np.asarray([t1[kpt].transpose(1,0) for kpt in range(nkpts)], order='C')
         fvo = np.asarray([fov[kpt].transpose(1,0) for kpt in range(nkpts)], order='C')
         fock = np.array([np.diag(x).real for x in eris.fock], dtype=np.float64)
@@ -516,51 +608,20 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
                                       #            - t3Tv_kji.transpose(0,1,2,5,4,3)
             return Ptmp_t3Tv
 
-        #full_t3v_ijk = get_full_t3p2(cc, t1, t2, eris)
-
+        #full_t3v_ijk = get_full_t3p2(cc, t1, t2, eris)  # Useful for checking
         fetcher = DataHandler()
         for ka, kb in product(range(nkpts), repeat=2):
           eaa = foo[ka][:, None] - fvv[ka][None, :]
           for ki, kj in product(range(nkpts), repeat=2):
             kc_list = kpts_helper.get_kconserv3(cc._scf.cell, cc.kpts,
                                                 [ki, kj, range(nkpts), ka, kb])
+            # TODO: one might block over [ki,kj,kk] as well for improved performance
             for kk in range(nkpts):
                 oovv_jXX = eris.oovv[kj, :, :]
                 cput0 = (time.clock(), time.time())
 
                 for task_id, task in enumerate(tasks):
                     a0, a1, b0, b1, c0, c1 = task
-
-                    #tmp_t3Tv_ijk = np.empty(((kk1-kk0),(a1-a0),(b1-b0),(c1-c0),nocc,nocc,nocc), dtype=np.complex)
-                    #tmp_t3Tv_jik = np.empty(((kk1-kk0),(a1-a0),(b1-b0),(c1-c0),nocc,nocc,nocc), dtype=np.complex)
-                    #tmp_t3Tv_kji = np.empty(((kk1-kk0),(a1-a0),(b1-b0),(c1-c0),nocc,nocc,nocc), dtype=np.complex)
-                    #for ikk, kk in enumerate(range(kk0, kk1)):
-                    #    kc = kc_list[ikk]
-                    #    kpt_indices = [[ki,kj,kk,ka,kb,kc],
-                    #                   [kj,ki,kk,ka,kb,kc],
-                    #                   [kk,kj,ki,ka,kb,kc]]
-                    #    fetcher.request_data(kpt_indices[0], task, kconserv, *args)
-                    #    fetcher.request_data(kpt_indices[1], task, kconserv, *args)
-                    #    fetcher.request_data(kpt_indices[2], task, kconserv, *args)
-
-                    #    data1 = fetcher.get_data(kpt_indices[0], task, kconserv, *args)
-                    #    data2 = fetcher.get_data(kpt_indices[1], task, kconserv, *args)
-                    #    data3 = fetcher.get_data(kpt_indices[2], task, kconserv, *args)
-
-                    #    tmp_t3Tv_ijk[ikk] = contract_t3Tv(kpt_indices[0], task, data1)
-                    #    tmp_t3Tv_jik[ikk] = contract_t3Tv(kpt_indices[1], task, data2)
-                    #    tmp_t3Tv_kji[ikk] = contract_t3Tv(kpt_indices[2], task, data3)
-
-                    #Ptmp_t3Tv = (2.*tmp_t3Tv_ijk - tmp_t3Tv_jik.transpose(0,1,2,3,5,4,6)
-                    #                             - tmp_t3Tv_kji.transpose(0,1,2,3,6,5,4))
-
-                    #if ki == ka:
-                    #    eris_Soovv = (2.*oovv_jXX[kk0:kk1,kb,:,:,b0:b1,c0:c1] -
-                    #                     oovv_jXX[kk0:kk1,kc,:,:,c0:c1,b0:b1].transpose(0,1,2,4,3))
-                    #    tmp =  0.5 * lib.einsum('xjkbc,xabcijk->ia', eris_Soovv, Ptmp_t3Tv)
-                    #    tmp /= eaa[:, a0:a1]
-
-                    #    pt1[ka,:,a0:a1] += tmp
 
                     tmp_t3Tv_ijk = np.empty(((a1-a0),(b1-b0),(c1-c0),nocc,nocc,nocc), dtype=np.complex)
                     tmp_t3Tv_jik = np.empty(((a1-a0),(b1-b0),(c1-c0),nocc,nocc,nocc), dtype=np.complex)
@@ -582,16 +643,8 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
                     tmp_t3Tv_ijk = contract_t3Tv(kpt_indices[0],task,data1)
                     tmp_t3Tv_jik = contract_t3Tv(kpt_indices[1],task,data2)
                     tmp_t3Tv_kji = contract_t3Tv(kpt_indices[2],task,data3)
-
-                    #new_tmp_t3Tv_ijk = full_t3v_ijk[ki,kj,kk,ka,kb].transpose(3,4,5,0,1,2)
-                    #new_tmp_t3Tv_jik = full_t3v_ijk[kj,ki,kk,ka,kb].transpose(3,4,5,0,1,2)
-                    #new_tmp_t3Tv_kji = full_t3v_ijk[kk,kj,ki,ka,kb].transpose(3,4,5,0,1,2)
-                    #print 'diff', np.linalg.norm(tmp_t3Tv_ijk - new_tmp_t3Tv_ijk)
-                    #tmp_t3Tv_ijk = new_tmp_t3Tv_ijk
-                    #tmp_t3Tv_jik = new_tmp_t3Tv_jik
-                    #tmp_t3Tv_kji = new_tmp_t3Tv_kji
-
-                    Ptmp_t3Tv = add_and_permute(kpt_indices[0], task, (tmp_t3Tv_ijk,tmp_t3Tv_jik,tmp_t3Tv_kji))
+                    Ptmp_t3Tv = add_and_permute(kpt_indices[0], task,
+                                    (tmp_t3Tv_ijk,tmp_t3Tv_jik,tmp_t3Tv_kji))
 
                     # Performing contribution to pt1
                     eris_Soovv = None
@@ -608,8 +661,7 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
                         ejkbc = (foo[kj][:,None,None,None] + foo[kk][None,:,None,None] -
                                 fvv[kb,b0:b1][None,None,:,None] - fvv[kc,c0:c1][None,None,None,:])
                         tmp = einsum('abcijk,ia->jkbc', Ptmp_t3Tv, 0.5*fov[ki,:,a0:a1]) / ejkbc
-                        pt2[kj,kk,kb,:,:,b0:b1,c0:c1] += tmp
-                        pt2[kk,kj,kc,:,:,c0:c1,b0:b1] += tmp.transpose(1,0,3,2)
+                        _add_pt2(pt2, nkpts, kconserv, [kj,kk,kb], [None,None,(b0,b1),(c0,c1)], tmp)
 
                     kd = kconserv[ka,ki,kb]
                     #if kk == kconserv[kd, kj, kc]:
@@ -617,8 +669,7 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
                     ejkdc = (foo[kj][:,None,None,None] + foo[kk][None,:,None,None] -
                              fvv[kd][None,None,:,None] - fvv[kc,c0:c1][None,None,None,:])
                     tmp = einsum('abcijk,diba->jkdc', Ptmp_t3Tv, eris_vovv) / ejkdc
-                    pt2[kj,kk,kd,:,:,:,c0:c1] += tmp
-                    pt2[kk,kj,kc,:,:,c0:c1,:] += tmp.transpose(1,0,3,2)
+                    _add_pt2(pt2, nkpts, kconserv, [kj,kk,kd], [None,None,None,(c0,c1)], tmp)
 
                     km = kconserv[kc, kk, kb]
                     eris_ooov = eris.ooov[kj,ki,km,:,:,:,a0:a1]
@@ -627,32 +678,229 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
                     emkbc = (foo[km][:,None,None,None] + foo[kk][None,:,None,None] -
                             fvv[kb,b0:b1][None,None,:,None] - fvv[kc,c0:c1][None,None,None,:])
                     tmp = einsum('abcijk,jima->mkbc', Ptmp_t3Tv, eris_ooov) / emkbc
-                    pt2[km,kk,kb,:,:,b0:b1,c0:c1] -= tmp
-                    pt2[kk,km,kc,:,:,c0:c1,b0:b1] -= tmp.transpose(1,0,3,2)
+                    _add_pt2(pt2, nkpts, kconserv, [km,kk,kb], [None,None,(b0,b1),(c0,c1)], -1.*tmp)
 
                     # Calculating Wovoo array
                     if build_ip_t3p2:
                         km = kconserv[ka,ki,kc]
                         eris_oovv = eris.oovv[km,ki,kc]
                         tmp = einsum('abcijk,mica->mbkj', Ptmp_t3Tv, eris_oovv)
-                        Wmbkj[km,kb,kk,:,b0:b1,:,:] += tmp
+                        Wmbkj_out[km,kb,kk,:,b0:b1,:,:] += tmp
 
                     # Calculating Wvvvo array
                     if build_ea_t3p2:
                         ke = kconserv[ki,ka,kk]
                         eris_oovv = eris.oovv[ki,kk,ka]
                         tmp = einsum('abcijk,ikae->cbej', Ptmp_t3Tv, eris_oovv)
-                        Wcbej[kc,kb,ke,:,c0:c1,b0:b1,:] -= tmp
+                        Wcbej_out[kc,kb,ke,:,c0:c1,b0:b1,:] -= tmp
 
                     fetcher.clean()
-                logger.timer_debug1(cc, 'EOM-CCSD T3[2] (%d,%d,%d,%d,%d) [total=%d]'%(ki,kj,kk,ka,kb,nkpts**4), *cput0)
+                logger.timer_debug1(cc, 'EOM-CCSD T3[2] (%d,%d,%d,%d,%d) [total=%d]'%(ki,kj,kk,ka,kb,nkpts**5), *cput0)
 
     get_t3_fast_new()
 
     delta_ccsd_energy = cc.energy(pt1, pt2, eris) - ccsd_energy
     logger.info(cc, 'CCSD energy T3[2] correction : %16.12e', delta_ccsd_energy)
 
-    return delta_ccsd_energy, pt1, pt2, Wmbkj, Wcbej
+    return delta_ccsd_energy, pt1, pt2, Wmbkj_out, Wcbej_out
+
+
+def run_gamma():
+    '''Script for checking gamma-point code and molecular code.'''
+    mf = pbcscf.RHF(cell)
+    mf.conv_tol = 1e-10
+    mf.kernel()
+
+    mycc = pbcc.RCCSD(mf)
+    mycc.conv_tol = 1e-10
+    eris = mycc.ao2mo()
+    mycc.kernel(eris=eris)
+
+    class eom(object):
+        def __init__(self):
+            self._cc = mycc
+            self.max_memory = 5000
+            self.verbose = 7
+            self.stdout = sys.stdout
+
+    kmf = pbcscf.KRHF(cell, kpts=[0.,0.,0.])
+    kmf.conv_tol = 1e-10
+    kmf.kernel()
+
+    kmo_coeff = mf.mo_coeff[None,:,:].astype(np.complex)
+    mykcc = pbcc.KRCCSD(kmf, mo_coeff=kmo_coeff)
+    mykcc.conv_tol = 1e-10
+    keris = mykcc.ao2mo(mo_coeff=kmo_coeff)
+    mykcc.kernel(eris=keris)
+    mykcc.t1 = mycc.t1[None,:].astype(np.complex).copy()
+    mykcc.t2 = mycc.t2[None,None,None,:,:,:,:].astype(np.complex).copy()
+
+    myeom = eom()
+    delta_ccsd_energy, pt1, pt2, Wmbkj, Wcbej = \
+        eom_rccsd.get_t3p2_amplitude_contribution_slow(myeom, mycc.t1, mycc.t2, eris=eris, build_t1_t2=True)
+    real_pt1 = pt1.copy()
+    real_pt2 = pt2.copy()
+    cdelta_ccsd_energy, cpt1, cpt2, _, _ = get_t3p2_amplitude_contribution(mykcc, mykcc.t1, mykcc.t2, eris=keris, copy_amps=True)
+    print('pt1 difference', np.linalg.norm(pt1-cpt1))
+    print('pt2 difference', np.linalg.norm(pt2-cpt2))
+    print('CCSD(T)_a delta energy difference', np.linalg.norm(cdelta_ccsd_energy - delta_ccsd_energy))
+
+
+def run_kpoint():
+    nk = [2,1,1]
+    scell = super_cell(cell, nk)
+    mf = pbcscf.RHF(scell)
+    mf.conv_tol = 1e-12
+    mf.kernel()
+
+    mycc = pbcc.RCCSD(mf)
+    mycc.conv_tol = 1e-12
+    mycc.conv_tol_normt = 1e-12
+    eris = mycc.ao2mo()
+    mycc.kernel(eris=eris)
+
+    class eom(object):
+        def __init__(self):
+            self._cc = mycc
+            self.max_memory = 5000
+            self.verbose = 7
+            self.stdout = sys.stdout
+
+    kmf = pbcscf.KRHF(cell, kpts=cell.make_kpts(nk, with_gamma_point=True))
+    kmf.conv_tol = 1e-12
+    kmf.kernel()
+
+    mykcc = pbcc.KRCCSD(kmf)
+    mykcc.conv_tol = 1e-12
+    keris = mykcc.ao2mo()
+    mykcc.kernel(eris=keris)
+    mykcc.t1 = mykcc.t1.astype(np.complex)
+    mykcc.t2 = mykcc.t2.astype(np.complex)
+
+    myeom = eom()
+    delta_ccsd_energy, pt1, pt2, Wmbkj, Wcbej = \
+        eom_rccsd.get_t3p2_amplitude_contribution_slow(myeom, mycc.t1, mycc.t2, eris=eris, build_t1_t2=True)
+    real_pt1 = pt1.copy()
+    real_pt2 = pt2.copy()
+    cdelta_ccsd_energy, cpt1, cpt2, _, _ = get_t3p2_amplitude_contribution(mykcc, mykcc.t1, mykcc.t2, eris=keris, copy_amps=True)
+    print('CCSD(T)_a delta energy difference ', np.linalg.norm(cdelta_ccsd_energy - delta_ccsd_energy/np.prod(nk)))
+
+
+def run_benchmark(nocc=15, nvir=25, nk=[2,1,1]):
+    def crand(shape):
+        return (np.random.rand(np.prod(shape)).reshape(shape) - 0.5 - 0.5*1j -
+                np.random.rand(np.prod(shape)).reshape(shape)*1j)
+
+    nmo = nocc + nvir
+    def make_rand_kmf():
+        # Not perfect way to generate a random mf.
+        # CSC = 1 is not satisfied and the fock matrix is neither
+        # diagonal nor sorted.
+        np.random.seed(2)
+        kmf = pbcscf.KRHF(cell, kpts=cell.make_kpts(nk))
+        kmf.exxdiv = None
+
+        kmf.mo_occ = np.zeros((np.prod(nk), nmo))
+        kmf.mo_occ[:, :nocc] = 2
+        kmf.mo_energy = np.arange(nmo) + np.random.random((np.prod(nk), nmo)) * .3
+        kmf.mo_energy[kmf.mo_occ == 0] += 2
+        kmf.mo_coeff = (np.random.random((np.prod(nk), nmo, nmo)) +
+                        np.random.random((np.prod(nk), nmo, nmo)) * 1j - .5 - .5j)
+        return kmf
+
+    rand_kmf = make_rand_kmf()
+
+    def rand_t1_t2(kmf, mycc):
+        nkpts = mycc.nkpts
+        nocc = mycc.nocc
+        nmo = mycc.nmo
+        nvir = nmo - nocc
+        np.random.seed(1)
+        t1 = (np.random.random((nkpts, nocc, nvir)) +
+              np.random.random((nkpts, nocc, nvir)) * 1j - .5 - .5j)
+        t2 = (np.random.random((nkpts, nkpts, nkpts, nocc, nocc, nvir, nvir)) +
+              np.random.random((nkpts, nkpts, nkpts, nocc, nocc, nvir, nvir)) * 1j - .5 - .5j)
+        kconserv = kpts_helper.get_kconserv(kmf.cell, kmf.kpts)
+
+        def kconserve_pmatrix(nkpts, kconserv):
+            Ps = np.zeros((nkpts, nkpts, nkpts, nkpts))
+            for ki in range(nkpts):
+                for kj in range(nkpts):
+                    for ka in range(nkpts):
+                        # Chemist's notation for momentum conserving t2(ki,kj,ka,kb)
+                        kb = kconserv[ki, ka, kj]
+                        Ps[ki, kj, ka, kb] = 1
+            return Ps
+
+        Ps = kconserve_pmatrix(nkpts, kconserv)
+        t2 = t2 + np.einsum('xyzijab,xyzw->yxwjiba', t2, Ps)
+        return t1, t2
+
+    rand_cc = pbcc.KRCCSD(rand_kmf)
+    rand_cc.verbose = 7
+    t1, t2 = rand_t1_t2(rand_kmf, rand_cc)
+    rand_cc.t1, rand_cc.t2 = t1, t2
+    nkpts = rand_cc.nkpts
+
+    def check_write_complete(filename, **kwargs):
+        '''Check for `completed` attr in file.'''
+        import os
+        mode = kwargs.get('mode', 'r')
+        if not os.path.isfile(filename):
+            return False
+        f = h5py.File(filename, mode=mode, **kwargs)
+        return f.attrs.get('completed', False)
+
+    def check_read_success(filename, **kwargs):
+        write_complete = check_write_complete(filename, **kwargs)
+        return write_complete
+
+    kconserv = kpts_helper.get_kconserv(rand_kmf.cell, rand_kmf.kpts)
+    class eris(object):
+        def __init__(self):
+            import os
+            filename = 'myeris.hdf5'
+            if not check_read_success(filename):
+                f = h5py.File(filename, 'w')
+
+                eris_vovv = crand((nkpts,nkpts,nkpts,nvir,nocc,nvir,nvir))
+                eris_ooov = crand((nkpts,nkpts,nkpts,nocc,nocc,nocc,nvir))
+                self.oooo = f.create_dataset('oooo', data=crand((nkpts,nkpts,nkpts,nocc,nocc,nocc,nocc)))
+                self.ooov = f.create_dataset('ooov', data=eris_ooov)
+                self.oovv = f.create_dataset('oovv', data=crand((nkpts,nkpts,nkpts,nocc,nocc,nvir,nvir)))
+                self.ovov = f.create_dataset('ovov', data=crand((nkpts,nkpts,nkpts,nocc,nvir,nocc,nvir)))
+                self.voov = f.create_dataset('voov', data=crand((nkpts,nkpts,nkpts,nvir,nocc,nocc,nvir)))
+                self.vovv = f.create_dataset('vovv', data=eris_vovv)
+
+                eris_vvop = np.zeros((nkpts,)*3 + (nvir,)*2 + (nocc, nmo), dtype=np.complex, order='C')
+                # vooo in chemist notation
+                eris_vooo = np.zeros((nkpts,)*3 + (nvir,) + (nocc,)*3, dtype=np.complex, order='C')
+                eris_vooo_C = np.zeros((nkpts,)*3 + (nvir,) + (nocc,)*3, dtype=np.complex, order='C')
+                for ki, kj, ka in product(range(nkpts), repeat=3):
+                    kb = kconserv[ki, ka, kj]
+                    eris_vvop[ki,kj,ka,:,:,:,nocc:] = eris_vovv[kb,ka,kj].conj().transpose(3,2,1,0)
+                    eris_vooo[ki,ka,kj] = eris_ooov[kb,kj,ka].conj().transpose(3,2,1,0)
+                    eris_vooo_C[ki,kj,ka] = eris_vooo[ki,ka,kj].transpose(0,2,1,3)
+                self.vooo = f.create_dataset('vooo', data=eris_vooo)
+                self.vooo_C = f.create_dataset('voooC', data=eris_vooo_C)
+                self.vvop = f.create_dataset('vvop', data=eris_vvop)
+
+                f.close()
+
+            f = h5py.File(filename, 'r')
+            self.oooo = f['oooo']
+            self.ooov = f['ooov']
+            self.oovv = f['oovv']
+            self.ovov = f['ovov']
+            self.voov = f['voov']
+            self.vovv = f['vovv']
+            self.vvop = f['vvop']
+            self.vooo = f['vooo']
+            self.vooo_C = f['voooC']
+
+    eris = eris()
+    eris.fock = np.array([np.diag(x) for x in rand_kmf.mo_energy])
+    get_t3p2_amplitude_contribution(rand_cc, t1, t2, eris=eris, copy_amps=True)
 
 if __name__ == '__main__':
     cell = pbcgto.Cell()
@@ -670,194 +918,15 @@ if __name__ == '__main__':
     3.370137329, 3.370137329, 0.000000000'''
     cell.unit = 'B'
     cell.precision = 1e-14
-    cell.verbose = 9
+    cell.verbose = 10
     cell.build()
 
-    true_system = False
-    if true_system:
+    do_benchmark = False
+    if do_benchmark:
+        run_benchmark(nocc=15, nvir=30, nk=[2,1,1])
+    else:
         gamma = False
         if gamma:
-            mf = pbcscf.RHF(cell)
-            mf.conv_tol = 1e-10
-            mf.kernel()
-
-            mycc = pbcc.RCCSD(mf)
-            mycc.conv_tol = 1e-10
-            eris = mycc.ao2mo()
-            mycc.kernel(eris=eris)
-
-            class eom(object):
-                def __init__(self):
-                    self._cc = mycc
-                    self.max_memory = 5000
-                    self.verbose = 7
-                    self.stdout = sys.stdout
-
-            kmf = pbcscf.KRHF(cell, kpts=[0.,0.,0.])
-            kmf.conv_tol = 1e-10
-            kmf.kernel()
-
-            kmo_coeff = mf.mo_coeff[None,:,:].astype(np.complex)
-            mykcc = pbcc.KRCCSD(kmf, mo_coeff=kmo_coeff)
-            mykcc.conv_tol = 1e-10
-            keris = mykcc.ao2mo(mo_coeff=kmo_coeff)
-            mykcc.kernel(eris=keris)
-            mykcc.t1 = mycc.t1[None,:].astype(np.complex).copy()
-            mykcc.t2 = mycc.t2[None,None,None,:,:,:,:].astype(np.complex).copy()
-
-            myeom = eom()
-            delta_ccsd_energy, pt1, pt2, Wmbkj, Wcbej = \
-                eom_rccsd.get_t3p2_amplitude_contribution_slow(myeom, mycc.t1, mycc.t2, eris=eris, build_t1_t2=True)
-            real_pt1 = pt1.copy()
-            real_pt2 = pt2.copy()
-            cdelta_ccsd_energy, cpt1, cpt2 = get_t3p2_amplitude_contribution(mykcc, mykcc.t1, mykcc.t2, eris=keris, copy_amps=True)
-            print np.linalg.norm(pt1-cpt1)
-            print np.linalg.norm(pt2-cpt2)
-            print np.linalg.norm(cdelta_ccsd_energy - delta_ccsd_energy)
+            run_gamma()
         else:
-            nk = [2,1,1]
-            scell = super_cell(cell, nk)
-            mf = pbcscf.RHF(scell)
-            mf.conv_tol = 1e-12
-            mf.kernel()
-
-            mycc = pbcc.RCCSD(mf)
-            mycc.conv_tol = 1e-12
-            mycc.conv_tol_normt = 1e-12
-            eris = mycc.ao2mo()
-            mycc.kernel(eris=eris)
-
-            class eom(object):
-                def __init__(self):
-                    self._cc = mycc
-                    self.max_memory = 5000
-                    self.verbose = 7
-                    self.stdout = sys.stdout
-
-            kmf = pbcscf.KRHF(cell, kpts=cell.make_kpts(nk, with_gamma_point=True))
-            kmf.conv_tol = 1e-12
-            kmf.kernel()
-
-            mykcc = pbcc.KRCCSD(kmf)
-            mykcc.conv_tol = 1e-12
-            keris = mykcc.ao2mo()
-            mykcc.kernel(eris=keris)
-            mykcc.t1 = mykcc.t1.astype(np.complex)
-            mykcc.t2 = mykcc.t2.astype(np.complex)
-
-            myeom = eom()
-            delta_ccsd_energy, pt1, pt2, Wmbkj, Wcbej = \
-                eom_rccsd.get_t3p2_amplitude_contribution_slow(myeom, mycc.t1, mycc.t2, eris=eris, build_t1_t2=True)
-            real_pt1 = pt1.copy()
-            real_pt2 = pt2.copy()
-            cdelta_ccsd_energy, cpt1, cpt2, _, _ = get_t3p2_amplitude_contribution(mykcc, mykcc.t1, mykcc.t2, eris=keris, copy_amps=True)
-            print np.linalg.norm(cdelta_ccsd_energy - delta_ccsd_energy/np.prod(nk))
-    else:
-        def crand(shape):
-            return (np.random.rand(np.prod(shape)).reshape(shape) - 0.5 - 0.5*1j -
-                    np.random.rand(np.prod(shape)).reshape(shape)*1j)
-
-        nmo = 40
-        nocc = 15
-        nk = [2,2,1]
-        nvir = nmo - nocc
-        def make_rand_kmf():
-            # Not perfect way to generate a random mf.
-            # CSC = 1 is not satisfied and the fock matrix is neither
-            # diagonal nor sorted.
-            np.random.seed(2)
-            kmf = pbcscf.KRHF(cell, kpts=cell.make_kpts(nk))
-            kmf.exxdiv = None
-
-            kmf.mo_occ = np.zeros((np.prod(nk), nmo))
-            kmf.mo_occ[:, :nocc] = 2
-            kmf.mo_energy = np.arange(nmo) + np.random.random((np.prod(nk), nmo)) * .3
-            kmf.mo_energy[kmf.mo_occ == 0] += 2
-            kmf.mo_coeff = (np.random.random((np.prod(nk), nmo, nmo)) +
-                            np.random.random((np.prod(nk), nmo, nmo)) * 1j - .5 - .5j)
-            return kmf
-
-        print 'creating rand mf...'
-        rand_kmf = make_rand_kmf()
-
-        def rand_t1_t2(kmf, mycc):
-            nkpts = mycc.nkpts
-            nocc = mycc.nocc
-            nmo = mycc.nmo
-            nvir = nmo - nocc
-            np.random.seed(1)
-            t1 = (np.random.random((nkpts, nocc, nvir)) +
-                  np.random.random((nkpts, nocc, nvir)) * 1j - .5 - .5j)
-            t2 = (np.random.random((nkpts, nkpts, nkpts, nocc, nocc, nvir, nvir)) +
-                  np.random.random((nkpts, nkpts, nkpts, nocc, nocc, nvir, nvir)) * 1j - .5 - .5j)
-            kconserv = kpts_helper.get_kconserv(kmf.cell, kmf.kpts)
-
-            def kconserve_pmatrix(nkpts, kconserv):
-                Ps = np.zeros((nkpts, nkpts, nkpts, nkpts))
-                for ki in range(nkpts):
-                    for kj in range(nkpts):
-                        for ka in range(nkpts):
-                            # Chemist's notation for momentum conserving t2(ki,kj,ka,kb)
-                            kb = kconserv[ki, ka, kj]
-                            Ps[ki, kj, ka, kb] = 1
-                return Ps
-
-            Ps = kconserve_pmatrix(nkpts, kconserv)
-            t2 = t2 + np.einsum('xyzijab,xyzw->yxwjiba', t2, Ps)
-            return t1, t2
-
-        rand_cc = pbcc.KRCCSD(rand_kmf)
-        rand_cc.verbose = 7
-        print 'creating rand t1/t2...'
-        t1, t2 = rand_t1_t2(rand_kmf, rand_cc)
-        rand_cc.t1, rand_cc.t2 = t1, t2
-        nkpts = rand_cc.nkpts
-
-        kconserv = kpts_helper.get_kconserv(rand_kmf.cell, rand_kmf.kpts)
-        class eris(object):
-            def __init__(self):
-                import os
-                filename = 'myeris.hdf5'
-                if not os.path.isfile(filename):
-                    f = h5py.File(filename, 'w')
-
-                    eris_vovv = crand((nkpts,nkpts,nkpts,nvir,nocc,nvir,nvir))
-                    eris_ooov = crand((nkpts,nkpts,nkpts,nocc,nocc,nocc,nvir))
-                    self.oooo = f.create_dataset('oooo', data=crand((nkpts,nkpts,nkpts,nocc,nocc,nocc,nocc)))
-                    self.ooov = f.create_dataset('ooov', data=eris_ooov)
-                    self.oovv = f.create_dataset('oovv', data=crand((nkpts,nkpts,nkpts,nocc,nocc,nvir,nvir)))
-                    self.ovov = f.create_dataset('ovov', data=crand((nkpts,nkpts,nkpts,nocc,nvir,nocc,nvir)))
-                    self.voov = f.create_dataset('voov', data=crand((nkpts,nkpts,nkpts,nvir,nocc,nocc,nvir)))
-                    self.vovv = f.create_dataset('vovv', data=eris_vovv)
-
-                    eris_vvop = np.zeros((nkpts,)*3 + (nvir,)*2 + (nocc, nmo), dtype=np.complex, order='C')
-                    # vooo in chemist notation
-                    eris_vooo = np.zeros((nkpts,)*3 + (nvir,) + (nocc,)*3, dtype=np.complex, order='C')
-                    eris_vooo_C = np.zeros((nkpts,)*3 + (nvir,) + (nocc,)*3, dtype=np.complex, order='C')
-                    for ki, kj, ka in product(range(nkpts), repeat=3):
-                        kb = kconserv[ki, ka, kj]
-                        eris_vvop[ki,kj,ka,:,:,:,nocc:] = eris_vovv[kb,ka,kj].conj().transpose(3,2,1,0)
-                        eris_vooo[ki,ka,kj] = eris_ooov[kb,kj,ka].conj().transpose(3,2,1,0)
-                        eris_vooo_C[ki,kj,ka] = eris_vooo[ki,ka,kj].transpose(0,2,1,3)
-                    self.vooo = f.create_dataset('vooo', data=eris_vooo)
-                    self.vooo_C = f.create_dataset('voooC', data=eris_vooo_C)
-                    self.vvop = f.create_dataset('vvop', data=eris_vvop)
-
-                    f.close()
-
-                f = h5py.File(filename, 'r')
-                self.oooo = f['oooo']
-                self.ooov = f['ooov']
-                self.oovv = f['oovv']
-                self.ovov = f['ovov']
-                self.voov = f['voov']
-                self.vovv = f['vovv']
-                self.vvop = f['vvop']
-                self.vooo = f['vooo']
-                self.vooo_C = f['voooC']
-
-        print 'creating eris...'
-        eris = eris()
-        eris.fock = np.array([np.diag(x) for x in rand_kmf.mo_energy])
-        print 'getting contribution...'
-        get_t3p2_amplitude_contribution(rand_cc, t1, t2, eris=eris, copy_amps=True)
+            run_kpoint()
