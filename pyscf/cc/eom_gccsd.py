@@ -1000,13 +1000,13 @@ def get_t3p2_amplitude_contribution(eom, t1, t2, eris=None, copy_amps=True,
     logger.info(eom, 'CCSD energy T3[2] correction : %14.8e', delta_ccsd_energy)
     return delta_ccsd_energy, pt1, pt2, Wmcik, Wacek
 
-def get_t3p2_amplitude_contribution_slow(eom, t1, t2, eris=None, copy_amps=True,
+def get_t3p2_amplitude_contribution_slow(cc, t1, t2, eris=None, copy_amps=True,
                                          build_t1_t2=True, build_ip_t3p2=False,
                                          build_ea_t3p2=False):
     """Calculates T1, T2 amplitudes corrected by second-order T3 contribution
 
     Args:
-        eom (:obj:`EOMIP`):
+        cc (:obj:`GCCSD`):
             Object containing coupled-cluster results.
         t1 (:obj:`ndarray`):
             T1 amplitudes.
@@ -1033,7 +1033,7 @@ def get_t3p2_amplitude_contribution_slow(eom, t1, t2, eris=None, copy_amps=True,
             2009, Equation 10.33
     """
     if eris is None:
-        eris = eom._cc.ao2mo()
+        eris = cc.ao2mo()
     fock = eris.fock
     nocc, nvir = t1.shape
 
@@ -1048,7 +1048,7 @@ def get_t3p2_amplitude_contribution_slow(eom, t1, t2, eris=None, copy_amps=True,
     vooo = _cp(ooov).conj().transpose(3, 2, 1, 0)
     vvvo = _cp(ovvv).conj().transpose(3, 2, 1, 0)
 
-    ccsd_energy = gccsd.energy(eom, t1, t2, eris)
+    ccsd_energy = gccsd.energy(cc, t1, t2, eris)
 
     #if copy_amps:
     #    pt1 = t1.copy()
@@ -1104,8 +1104,8 @@ def get_t3p2_amplitude_contribution_slow(eom, t1, t2, eris=None, copy_amps=True,
     Wmcik = 0.5*lib.einsum('ijkabc,mjab->mcik', tmp_t3, oovv)
     Wacek = -0.5*lib.einsum('ijkabc,ijeb->acek', tmp_t3, oovv)
 
-    delta_ccsd_energy = gccsd.energy(eom, pt1, pt2, eris) - ccsd_energy
-    logger.info(eom, 'CCSD energy T3[2] correction : %14.8e', delta_ccsd_energy)
+    delta_ccsd_energy = gccsd.energy(cc, pt1, pt2, eris) - ccsd_energy
+    logger.info(cc, 'CCSD energy T3[2] correction : %14.8e', delta_ccsd_energy)
     return delta_ccsd_energy, pt1, pt2, Wmcik, Wacek
 
 class _IMDS:

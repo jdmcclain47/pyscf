@@ -1548,13 +1548,13 @@ class EOMEESpinFlip(EOMEE):
         return nocc*nvir + nbaaa + naaba
 
 
-def get_t3p2_amplitude_contribution_slow(eom, t1, t2, eris=None, copy_amps=True,
+def get_t3p2_amplitude_contribution_slow(cc, t1, t2, eris=None, copy_amps=True,
                                          build_t1_t2=True, build_ip_t3p2=False,
                                          build_ea_t3p2=False):
     """Calculates T1, T2 amplitudes corrected by second-order T3 contribution
 
     Args:
-        eom (:obj:`EOMIP`):
+        cc (:obj:`RCCSD`):
             Object containing coupled-cluster results.
         t1 (:obj:`ndarray`):
             T1 amplitudes.
@@ -1583,7 +1583,7 @@ def get_t3p2_amplitude_contribution_slow(eom, t1, t2, eris=None, copy_amps=True,
     """
     assert(copy_amps == True)
     if eris is None:
-        eris = eom._cc.ao2mo()
+        eris = cc.ao2mo()
     fock = eris.fock
     nocc, nvir = t1.shape
 
@@ -1597,7 +1597,7 @@ def get_t3p2_amplitude_contribution_slow(eom, t1, t2, eris=None, copy_amps=True,
     eris_vvov = eris.get_ovvv().conj().transpose(1,3,0,2)
     eris_vooo = eris.ovoo.conj().transpose(1,0,3,2)
 
-    ccsd_energy = ccsd.energy(eom, t1, t2, eris)
+    ccsd_energy = ccsd.energy(cc, t1, t2, eris)
 
     if build_ip_t3p2:
         Wmbkj = np.zeros((nocc,nvir,nocc,nocc), dtype=dtype)
@@ -1668,8 +1668,8 @@ def get_t3p2_amplitude_contribution_slow(eom, t1, t2, eris=None, copy_amps=True,
     Wcbej += lib.einsum('kjiabc,iake->cbej', tmp_t3, -ovov)
     Wcbej = Wcbej * -1.
 
-    delta_ccsd_energy = ccsd.energy(eom, pt1, pt2, eris) - ccsd_energy
-    logger.info(eom, 'CCSD energy T3[2] correction : %14.8e', delta_ccsd_energy)
+    delta_ccsd_energy = ccsd.energy(cc, pt1, pt2, eris) - ccsd_energy
+    logger.info(cc, 'CCSD energy T3[2] correction : %14.8e', delta_ccsd_energy)
     return delta_ccsd_energy, pt1, pt2, Wmbkj, Wcbej
 
 class _IMDS:
