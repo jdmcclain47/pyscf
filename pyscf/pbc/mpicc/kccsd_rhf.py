@@ -1066,7 +1066,7 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
                             woovv = 2.*oovv_ijab - oovv_ijba
 
                             t2_tril[tril_index(ki,kj),ka] = numpy.conj(oovv_ijab / eijab)
-                            local_mp2 += numpy.dot(t2_tril[tril_index(ki,kj),ka].flatten(),woovv.flatten())
+                            local_mp2 += numpy.dot(t2_tril[tril_index(ki,kj),ka].flatten(), woovv.flatten())
                     if kj < ki:
                         for ka in ranges2:
                             kb = kconserv[ki,ka,kj]
@@ -1085,7 +1085,7 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
                             woovv = 2.*oovv_ijab - oovv_ijba
 
                             tmp = numpy.conj(oovv_ijab / eijab)
-                            local_mp2 += numpy.dot(tmp.flatten(),woovv.flatten())
+                            local_mp2 += numpy.dot(tmp.flatten(), woovv.flatten())
             loader.slave_finished()
 
         comm.Allreduce(MPI.IN_PLACE, local_mp2, op=MPI.SUM)
@@ -1117,7 +1117,7 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
         mo_e_v = [e[nocc:] for e in eris.mo_energy]
 
         # Get location of padded elements in occupied and virtual space
-        nonzero_opadding, nonzero_vpadding = padding_k_idx(cc, kind="split")
+        nonzero_opadding, nonzero_vpadding = padding_k_idx(self, kind="split")
 
         kconserv = self.kconserv
         for ki in range(nkpts):
@@ -1140,7 +1140,7 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
         t2 = numpy.conj(t2)
         emp2 = numpy.einsum('pqrijab,pqrijab',t2,woovv).real
         emp2 /= nkpts
-        logger.info(self, 'Init t2, MP2 energy = %.15g', self.emp2)
+        logger.info(self, 'Init t2, MP2 energy = %.15g', emp2)
         logger.timer(self, 'init mp2', *time0)
         return self.emp2, t1, t2
 
@@ -1158,19 +1158,18 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
     def update_amps(self, t1, t2, eris, max_memory=2000):
         return update_amps(self, t1, t2, eris, max_memory)
 
-    def ipccsd_diag(self):
+    def ipccsd_diag(self, kshift, with_t3p2=False, with_t3p2_imds=False):
+        if not hasattr(self, 'imds'):
+            self.imds = _IMDS(self, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
+        self.imds.ip_partition = self.ip_partition
+        if not self.imds.made_ip_imds:
+            self.imds.make_ip(partition=self.ip_partition, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
+        imds = self.imds
+
         t1,t2 = self.t1, self.t2
         nkpts, nocc, nvir = t1.shape
         kshift = self.kshift
         kconserv = self.kconserv
-
-        if not self.made_ip_imds:
-            if not hasattr(self,'imds'):
-                self.imds = _IMDS(self)
-            self.imds.make_ip(self)
-            self.made_ip_imds = True
-
-        imds = self.imds
 
         Hr1 = -numpy.diag(imds.Loo[kshift])
 
@@ -1228,7 +1227,8 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
         vector = self.amplitudes_to_vector_ip(Hr1,Hr2)
         return vector
 
-    def ipccsd(self, nroots=2*4, kptlist=None):
+    def ipccsd(self, nroots=1, left=False, koopmans=False, guess=None, partition=None,
+               kptlist=None, **kwargs):
         time0 = time.clock(), time.time()
         log = logger.Logger(self.stdout, self.verbose)
         nocc = self.nocc
@@ -1244,9 +1244,18 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
         evals = np.zeros((len(kptlist),nroots), np.float)
         evecs = np.zeros((len(kptlist),nroots,size), np.complex)
 
+        if not hasattr(self, 'imds'):
+            self.imds = _IMDS(self, with_t3p2=kwargs.get('with_t3p2', False),
+                                    with_t3p2_imds=kwargs.get('with_t3p2_imds', False))
+
         for k,kshift in enumerate(kptlist):
+            if left:
+                matvec = lambda _arg: self.lipccsd_matvec(_arg, kshift, **kwargs)
+            else:
+                matvec = lambda _arg: self.ipccsd_matvec(_arg, kshift, **kwargs)
+
             self.kshift = kshift
-            diag = self.ipccsd_diag()
+            diag = self.ipccsd_diag(kshift, **kwargs)
             diag = self.mask_frozen_ip(diag, kshift, const=LARGE_DENOM)
             precond = lambda dx, e, x0: dx/(diag-e)
             # Initial guess from file
@@ -1258,7 +1267,7 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
             #    x0 = np.zeros_like(diag)
             #    x0[np.argmin(diag)] = 1.0
 
-            conv, evals_k, evecs_k = eigs(self.ipccsd_matvec, size, nroots, x0=x0, Adiag=diag, verbose=self.verbose)
+            conv, evals_k, evecs_k = eigs(matvec, size, nroots, x0=x0, Adiag=diag, verbose=self.verbose)
 
             evals_k = evals_k.real
             evals[k] = evals_k
@@ -1283,9 +1292,18 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
         safeBcastInPlace(MPI.COMM_WORLD, t2)
         return t1, t2
 
-    def ipccsd_matvec(self, vector):
-        kshift = self.kshift
+    def ipccsd_matvec(self, vector, kshift, imds=None, diag=None, with_t3p2=False,
+                      with_t3p2_imds=False):
         # Ref: Z. Tu, F. Wang, and X. Li, J. Chem. Phys. 136, 174102 (2012) Eqs.(8)-(9)
+        if not hasattr(self, 'imds'):
+            if imds is None:
+                self.imds = _IMDS(self, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
+            else:
+                self.imds = imds
+        self.imds.ip_partition = self.ip_partition
+        if not self.imds.made_ip_imds:
+            self.imds.make_ip(partition=self.ip_partition, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
+        imds = self.imds
         vector = self.mask_frozen_ip(vector, kshift, const=0.0)
         r1,r2 = self.vector_to_amplitudes_ip(vector)
         r1 = comm.bcast(r1, root=0)
@@ -1296,14 +1314,6 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
         nkpts,nocc,nvir = self.t1.shape
         nkpts = self.nkpts
         kconserv = self.kconserv
-
-        if not self.made_ip_imds:
-            if not hasattr(self,'imds'):
-                self.imds = _IMDS(self)
-            self.imds.make_ip(self)
-            self.made_ip_imds = True
-
-        imds = self.imds
 
         cput2 = time.clock(), time.time()
         Hr1 = numpy.zeros(r1.shape,dtype=t1.dtype)
@@ -1342,6 +1352,8 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
 
             s0,s1 = [slice(min(x),max(x)+1) for x in (ranges0,ranges1)]
             Wovoo_sXi  = _cp(imds.Wovoo[kshift,:,s0])
+            if with_t3p2_imds:
+                Wovoo_sXi += _cp(imds.Wovoo_t3p2[kshift,:,s0])
             WooooS_Xij = _cp(imds.WooooS[:,s0,s1])
 
             tmp = numpy.zeros(nvir,dtype=t2.dtype)
@@ -1392,49 +1404,18 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
         vector = self.mask_frozen_ip(vector, kshift, const=0.0)
         return vector
 
-    def lipccsd(self, nroots=2*4, kptlist=None):
-        time0 = time.clock(), time.time()
-        log = logger.Logger(self.stdout, self.verbose)
-        nocc = self.nocc
-        nvir = self.nmo - nocc
-        nkpts = self.nkpts
-        if kptlist is None:
-            kptlist = range(nkpts)
-        size = self.vector_size_ip()
-        for k,kshift in enumerate(kptlist):
-            self.kshift = kshift
-            nfrozen = np.sum(self.mask_frozen_ip(np.zeros(size, dtype=int), kshift, const=1))
-            nroots = min(nroots, size - nfrozen)
-        evals = np.zeros((len(kptlist),nroots), np.float)
-        evecs = np.zeros((len(kptlist),nroots,size), np.complex)
+    def lipccsd_matvec(self, vector, kshift, imds=None, diag=None, with_t3p2=False, with_t3p2_imds=False):
+        # Ref: Nooijen and Snijders, J. Chem. Phys. 102, 1681 (1995) Eqs.(8)-(9)
+        if not hasattr(self, 'imds'):
+            if imds is None:
+                self.imds = _IMDS(self, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
+            else:
+                self.imds = imds
+        self.imds.ip_partition = self.ip_partition
+        if not self.imds.made_ip_imds:
+            self.imds.make_ip(partition=self.ip_partition, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
+        imds = self.imds
 
-        for k,kshift in enumerate(kptlist):
-            self.kshift = kshift
-            diag = self.ipccsd_diag()
-            precond = lambda dx, e, x0: dx/(diag-e)
-            # Initial guess from file
-            amplitude_filename = "__lipccsd" + str(kshift) + "__.hdf5"
-            rsuccess, x0 = read_eom_amplitudes((nroots,size),filename=amplitude_filename)
-            if x0 is not None:
-                x0 = x0.T
-            #if not rsuccess:
-            #    x0 = np.zeros_like(diag)
-            #    x0[np.argmin(diag)] = 1.0
-
-            conv, evals_k, evecs_k = eigs(self.lipccsd_matvec, size, nroots, x0=x0, Adiag=diag, verbose=self.verbose)
-
-            evals_k = evals_k.real
-            evals[k] = evals_k
-            evecs[k] = evecs_k.T
-
-            write_eom_amplitudes(evecs[k],filename=amplitude_filename)
-        time0 = log.timer_debug1('converge ip-ccsd', *time0)
-        comm.Barrier()
-        return evals.real, evecs
-
-    def lipccsd_matvec(self, vector):
-        # Ref: Z. Tu, F. Wang, and X. Li, J. Chem. Phys. 136, 174102 (2012) Eqs.(8)-(9)
-        kshift = self.kshift
         vector = self.mask_frozen_ip(vector, kshift, const=0.0)
         r1,r2 = self.vector_to_amplitudes_ip(vector)
         r1 = comm.bcast(r1, root=0)
@@ -1445,14 +1426,6 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
         nkpts,nocc,nvir = self.t1.shape
         nkpts = self.nkpts
         kconserv = self.kconserv
-
-        if not self.made_ip_imds:
-            if not hasattr(self,'imds'):
-                self.imds = _IMDS(self)
-            self.imds.make_ip(self)
-            self.made_ip_imds = True
-
-        imds = self.imds
 
         cput2 = time.clock(), time.time()
         Hr1 = numpy.zeros(r1.shape,dtype=t1.dtype)
@@ -1468,6 +1441,8 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
 
         for kbrange, kirange in mpi.work_stealing_partition(task_list):
             Wovoo_sbi = _cp(imds.Wovoo[kshift,slice(*kbrange),slice(*kirange)])
+            if with_t3p2_imds:
+                Wovoo_sbi += _cp(imds.Wovoo_t3p2[kshift,slice(*kbrange),slice(*kirange)])
 
             for iterkb, kb in enumerate(range(*kbrange)):
                 for iterki, ki in enumerate(range(*kirange)):
@@ -1618,17 +1593,18 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
         #                    index += 1
         return vector
 
-    def ipccsd_star(self, ipccsd_evals, ipccsd_evecs, lipccsd_evecs):
+    def _ipccsd_star(self, ipccsd_evals, ipccsd_evecs, lipccsd_evecs, kptlist):
         nproc = comm.Get_size()
         nocc = self.nocc
         nvir = self.nmo - nocc
         nkpts = self.nkpts
         kconserv = self.kconserv
         eris = self.eris
-        kshift = self.kshift
         t1, t2 = self.t1, self.t2
         foo = eris.fock[:,:nocc,:nocc]
         fvv = eris.fock[:,nocc:,nocc:]
+        assert(len(kptlist) == 1)
+        kshift = kptlist[0]
 
         e = []
         assert len(ipccsd_evecs.shape) == 2  # Done at a single k-point, kshift
@@ -1899,19 +1875,18 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
 
         return np.array(e)
 
-    def eaccsd_diag(self):
+    def eaccsd_diag(self, kshift, with_t3p2=False, with_t3p2_imds=False):
+        if not hasattr(self, 'imds'):
+            self.imds = _IMDS(self, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
+        self.imds.ea_partition = self.ea_partition
+        if not self.imds.made_ea_imds:
+            self.imds.make_ea(partition=self.ea_partition, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
+        imds = self.imds
+
         t1,t2 = self.t1, self.t2
         nkpts, nocc, nvir = t1.shape
         kshift = self.kshift
         kconserv = self.kconserv
-
-        if not self.made_ea_imds:
-            if not hasattr(self,'imds'):
-                self.imds = _IMDS(self)
-            self.imds.make_ea(self)
-            self.made_ea_imds = True
-
-        imds = self.imds
 
         Hr1 = numpy.diag(imds.Lvv[kshift])
 
@@ -1969,7 +1944,8 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
         vector = self.amplitudes_to_vector_ea(Hr1,Hr2)
         return vector
 
-    def eaccsd(self, nroots=2*4, kptlist=None):
+    def eaccsd(self, nroots=1, left=False, koopmans=False, guess=None, partition=None,
+               kptlist=None, **kwargs):
         time0 = time.clock(), time.time()
         log = logger.Logger(self.stdout, self.verbose)
         nocc = self.nocc
@@ -1985,9 +1961,18 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
         evals = np.zeros((len(kptlist),nroots), np.float)
         evecs = np.zeros((len(kptlist),nroots,size), np.complex)
 
+        # Initialize intermediates
+        if not hasattr(self, 'imds'):
+            self.imds = _IMDS(self, with_t3p2=kwargs.get('with_t3p2', False),
+                                    with_t3p2_imds=kwargs.get('with_t3p2_imds', False))
+
         for k,kshift in enumerate(kptlist):
-            self.kshift = kshift
-            diag = self.eaccsd_diag()
+            if left:
+                matvec = lambda _arg: self.leaccsd_matvec(_arg, kshift, **kwargs)
+            else:
+                matvec = lambda _arg: self.eaccsd_matvec(_arg, kshift, **kwargs)
+
+            diag = self.eaccsd_diag(kshift, **kwargs)
             diag = self.mask_frozen_ea(diag, kshift, const=LARGE_DENOM)
             precond = lambda dx, e, x0: dx/(diag-e)
             # Initial guess from file
@@ -1999,7 +1984,7 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
             #    x0 = np.zeros_like(diag)
             #    x0[np.argmin(diag)] = 1.0
 
-            conv, evals_k, evecs_k = eigs(self.eaccsd_matvec, size, nroots, x0=x0, Adiag=diag, verbose=self.verbose)
+            conv, evals_k, evecs_k = eigs(matvec, size, nroots, x0=x0, Adiag=diag, verbose=self.verbose)
 
             evals_k = evals_k.real
             evals[k] = evals_k
@@ -2010,8 +1995,17 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
         comm.Barrier()
         return evals.real, evecs
 
-    def eaccsd_matvec(self, vector):
+    def eaccsd_matvec(self, vector, kshift, imds=None, diag=None, with_t3p2=False,
+                      with_t3p2_imds=False):
         # Ref: Nooijen and Bartlett, J. Chem. Phys. 102, 3629 (1994) Eqs.(30)-(31)
+        if not hasattr(self, 'imds'):
+            if imds is None:
+                self.imds = _IMDS(self, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
+            else:
+                self.imds = imds
+        if not self.imds.made_ea_imds:
+            self.imds.make_ea(partition=self.ea_partition, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
+        imds = self.imds
         kshift = self.kshift
         vector = self.mask_frozen_ea(vector, kshift, const=0.0)
         r1,r2 = self.vector_to_amplitudes_ea(vector)
@@ -2022,14 +2016,6 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
         nkpts,nocc,nvir = self.t1.shape
         nkpts = self.nkpts
         kconserv = self.kconserv
-
-        if not self.made_ea_imds:
-            if not hasattr(self,'imds'):
-                self.imds = _IMDS(self)
-            self.imds.make_ea(self)
-            self.made_ea_imds = True
-
-        imds = self.imds
 
         Hr1 = numpy.zeros(r1.shape,dtype=t1.dtype)
         mem = 0.5e9
@@ -2085,6 +2071,8 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
                     Hr2[kj,ka] += einsum('bd,jad->jab',imds.Lvv[kb],r2[kj,ka])
 
             WvvvoR1_abX = _cp(imds.WvvvoR1[kshift,s0,s1])
+            if with_t3p2_imds:
+                WvvvoR1_abX += _cp(imds.Wvvvo_t3p2[s0,s1,kshift])
             for iterka,ka in enumerate(ranges0):
                 for iterkb,kb in enumerate(ranges1):
                     kj = kconserv[ka,kshift,kb]
@@ -2140,50 +2128,18 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
         vector = self.mask_frozen_ea(vector, kshift, const=0.0)
         return vector
 
-    def leaccsd(self, nroots=2*4, kptlist=None):
-        time0 = time.clock(), time.time()
-        log = logger.Logger(self.stdout, self.verbose)
-        nocc = self.nocc
-        nvir = self.nmo - nocc
-        nkpts = self.nkpts
-        if kptlist is None:
-            kptlist = range(nkpts)
-        size = self.vector_size_ea()
-        for k,kshift in enumerate(kptlist):
-            self.kshift = kshift
-            nfrozen = np.sum(self.mask_frozen_ea(np.zeros(size, dtype=int), kshift, const=1))
-            nroots = min(nroots, size - nfrozen)
-        evals = np.zeros((len(kptlist),nroots), np.float)
-        evecs = np.zeros((len(kptlist),nroots,size), np.complex)
+    def leaccsd_matvec(self, vector, kshift, imds=None, diag=None, with_t3p2=False,                  with_t3p2_imds=False):
+        # Ref: Nooijen and Bartlett, J. Chem. Phys. 102, 3629 (1994) Eqs.(30)-(31)
+        if not hasattr(self, 'imds'):
+            if imds is None:
+                self.imds = _IMDS(self, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
+            else:
+                self.imds = imds
+        if not self.imds.made_ea_imds:
+            self.imds.make_ea(partition=self.ea_partition, with_t3p2=with_t3p2, with_t3p2_imds=with_t3p2_imds)
+        imds = self.imds
 
-        for k,kshift in enumerate(kptlist):
-            self.kshift = kshift
-            diag = self.eaccsd_diag()
-            precond = lambda dx, e, x0: dx/(diag-e)
-            # Initial guess from file
-            amplitude_filename = "__leaccsd" + str(kshift) + "__.hdf5"
-            rsuccess, x0 = read_eom_amplitudes((nroots,size),filename=amplitude_filename)
-            if x0 is not None:
-                x0 = x0.T
-            #if not rsuccess:
-            #    x0 = np.zeros_like(diag)
-            #    x0[np.argmin(diag)] = 1.0
-
-            conv, evals_k, evecs_k = eigs(self.leaccsd_matvec, size, nroots, x0=x0, Adiag=diag, verbose=self.verbose)
-
-            evals_k = evals_k.real
-            evals[k] = evals_k
-            evecs[k] = evecs_k.T
-
-            write_eom_amplitudes(evecs[k],amplitude_filename)
-        time0 = log.timer_debug1('converge lea-ccsd', *time0)
-        comm.Barrier()
-        return evals.real, evecs
-
-    def leaccsd_matvec(self, vector):
-        # See relevant equations in cc/rccsd_slow.py
-        # Does not follow the equations in Nooijen's paper
-        # for eaccsd, uses a different left basis.
+        vector = self.mask_frozen_ea(vector, kshift, const=0.0)
         r1,r2 = self.vector_to_amplitudes_ea(vector)
         r1 = comm.bcast(r1, root=0)
         r2 = comm.bcast(r2, root=0)
@@ -2194,14 +2150,6 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
         kshift = self.kshift
         kconserv = self.kconserv
 
-        if not self.made_ea_imds:
-            if not hasattr(self,'imds'):
-                self.imds = _IMDS(self)
-            self.imds.make_ea(self)
-            self.made_ea_imds = True
-
-        imds = self.imds
-
         # Beginning HR1 multiplication
         Hr1 = numpy.zeros(r1.shape,dtype=t2.dtype)
         def mem_usage_vvvo(nocc, nvir, nkpts):
@@ -2210,6 +2158,8 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
         task_list = generate_max_task_list(array_size,blk_mem_size=mem_usage_vvvo(nocc,nvir,nkpts),priority_list=[1,1])
         for karange, kbrange in mpi.work_stealing_partition(task_list):
             WvvvoR1_sab = _cp(imds.WvvvoR1[kshift,slice(*karange),slice(*kbrange)])
+            if with_t3p2_imds:
+                WvvvoR1_sab += _cp(imds.Wvvvo_t3p2[slice(*karange),slice(*kbrange),kshift])
             for iterka, ka in enumerate(range(*karange)):
                 for iterkb, kb in enumerate(range(*kbrange)):
                     kj = kconserv[ka,kshift,kb]
@@ -2295,6 +2245,7 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
         comm.Allreduce(MPI.IN_PLACE, Hr2, op=MPI.SUM)
 
         vector = self.amplitudes_to_vector_ea(Hr1,Hr2)
+        vector = self.mask_frozen_ea(vector, kshift, const=0.0)
         return vector
 
     def vector_to_amplitudes_ea(self,vector):
@@ -2334,16 +2285,17 @@ class RCCSD(pyscf.pbc.cc.kccsd_rhf.RCCSD):
         #                    index += 1
         return vector
 
-    def eaccsd_star(self, eaccsd_evals, eaccsd_evecs, leaccsd_evecs):
+    def _eaccsd_star(self, eaccsd_evals, eaccsd_evecs, leaccsd_evecs, kptlist):
         nocc = self.nocc
         nvir = self.nmo - nocc
         nkpts = self.nkpts
         kconserv = self.kconserv
         eris = self.eris
-        kshift = self.kshift
         t1, t2 = self.t1, self.t2
         foo = eris.fock[:,:nocc,:nocc]
         fvv = eris.fock[:,nocc:,nocc:]
+        assert(len(kptlist) == 1)
+        kshift = kptlist[0]
 
         e = []
         assert len(eaccsd_evecs.shape) == 2  # Done at a single k-point, kshift
@@ -3093,12 +3045,35 @@ class _ERIS:
 CCSD = RCCSD
 
 class _IMDS:
-    def __init__(self, cc):
-        return
+    def __init__(self, cc, with_t3p2=False, copy_amps_t3p2=True, with_t3p2_imds=False):
+        self.verbose = cc.verbose
+        self.stdout = cc.stdout
+        if copy_amps_t3p2 is True:
+            self.t1 = cc.t1.copy()
+            self.t2 = cc.t2.copy()
+        else:
+            self.t1 = cc.t1
+            self.t2 = cc.t2
+        self._cc = cc  # TODO: delete me
+        self.eris = cc.eris
+        self.kconserv = cc.khelper.kconserv
+        self.made_ip_imds = False
+        self.made_ea_imds = False
+        self._made_shared_2e = False
+        # TODO: check whether to hold all stuff in memory
+        self._fimd = lib.H5TmpFile() if hasattr(self.eris, "feri1") else None
+        self._ip_partition = None
+        self._ea_partition = None
+        self._made_t3p2_correction = False
 
-    def make_ip(self,cc):
-        #cc = self.cc
-        t1,t2,eris = cc.t1, cc.t2, cc.eris
+        self.with_t3p2 = with_t3p2
+        self.with_t3p2_imds = with_t3p2_imds
+        self.copy_amps_t3p2 = copy_amps_t3p2
+
+    def make_ip(self, **kwargs):
+        cc = self._cc
+        self.make_t3p2_imds(**kwargs)
+        t1,t2,eris = self.t1, self.t2, self.eris
         nkpts,nocc,nvir = t1.shape
 
         if not hasattr(self, 'fint1'):
@@ -3166,6 +3141,38 @@ class _IMDS:
         self.W2ovov = self.fint1['W2ovov']
         self.Wovov  = self.fint1['Wovov' ]
         self.Wovoo  = self.fint1['Wovoo' ]
+        self.made_ip_imds = True
+
+    def make_t3p2_imds(self, **kwargs):
+        with_t3p2 = kwargs.get('with_t3p2', False)
+        copy_amps_t3p2 = kwargs.get('copy_amps_t3p2', True)
+        with_t3p2_imds = kwargs.get('with_t3p2_imds', False)
+        #if kwargs:
+        #    raise TypeError('Unexpected **kwargs: %r' % kwargs)
+        if not (with_t3p2 or with_t3p2_imds):
+            return self
+
+        cput0 = (time.clock(), time.time())
+
+        t1, t2, eris = self.t1, self.t2, self.eris
+        from pyscf.pbc.mpicc.mpi_t3p2_experimental import get_t3p2_amplitude_contribution as t3p2_drv
+        drv = t3p2_drv
+        #drv = imd.get_t3p2_amplitude_contribution_slow
+        if (not self._made_t3p2_correction):
+            delta_ccsd_energy, t1, t2, Wmcik, Wacek = \
+                drv(self._cc, t1, t2, eris=eris, copy_amps=copy_amps_t3p2,
+                    build_t1_t2=with_t3p2, build_ip_t3p2=with_t3p2_imds,
+                    build_ea_t3p2=with_t3p2_imds)
+            if with_t3p2_imds:
+                self.Wovoo_t3p2 = Wmcik
+                self.Wvvvo_t3p2 = Wacek
+
+            self.t1 = t1
+            self.t2 = t2
+            self._made_t3p2_correction = True
+
+        logger.timer_debug1(self, 'EOM-CCSD T3[2] intermediates', *cput0)
+        return self
 
     def close_ip(self,cc):
         self.fint1.close()
@@ -3178,8 +3185,10 @@ class _IMDS:
             #for key in self.feri1.keys(): del(self.feri1[key])
             self.fint2.close()
 
-    def make_ea(self,cc):
-        t1,t2,eris = cc.t1, cc.t2, cc.eris
+    def make_ea(self, **kwargs):
+        cc = self._cc
+        self.make_t3p2_imds(**kwargs)
+        t1,t2,eris = self.t1, self.t2, self.eris
         nkpts,nocc,nvir = t1.shape
 
         if not hasattr(self, 'fint2'):
@@ -3268,6 +3277,7 @@ class _IMDS:
 #
         #self.Wvvvo  = self.fint2['Wvvvo' ]
         self.WvvvoR1  = self.fint2['WvvvoR1' ]
+        self.made_ea_imds = True
 
 def _cp(a):
     return np.array(a, copy=False, order='C')
