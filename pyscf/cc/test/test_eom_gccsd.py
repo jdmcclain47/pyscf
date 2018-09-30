@@ -160,37 +160,41 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(e[2], 0.28345228596676159, 6)
 
     def test_h2o_star(self):
-        mol_n2 = gto.Mole()
-        mol_n2.atom = [
+        mol_h2o = gto.Mole()
+        mol_h2o.atom = [
                 [8, [0.000000000000000, -0.000000000000000, -0.124143731294022]],
                 [1, [0.000000000000000, -1.430522735894536,  0.985125550040314]],
                 [1, [0.000000000000000,  1.430522735894536,  0.985125550040314]]]
-        mol_n2.unit = 'B'
-        mol_n2.basis = '3-21g'
-        mol_n2.verbose = 7
-        mol_n2.output = '/dev/null'
-        mol_n2.build()
+        mol_h2o.unit = 'B'
+        mol_h2o.basis = {'H' : [[0,
+                               [5.4471780, 0.156285],
+                               [0.8245472, 0.904691]],
+                               [0, [0.1831916, 1.0]]],
+                        'O' : '3-21G'}
+        mol_h2o.verbose = 7
+        mol_h2o.output = '/dev/null'
+        mol_h2o.build()
         mol.conv_tol = 1e-12
-        mf_n2 = scf.RHF(mol_n2)
-        mf_n2.conv_tol_grad = 1e-12
-        mf_n2.kernel()
-        mycc_n2 = cc.GCCSD(mf_n2).run()
-        mycc_n2.conv_tol_normt = 1e-12
-        mycc_n2.kernel()
+        mf_h2o = scf.RHF(mol_h2o)
+        mf_h2o.conv_tol_grad = 1e-12
+        mf_h2o.kernel()
+        mycc_h2o = cc.GCCSD(mf_h2o).run()
+        mycc_h2o.conv_tol_normt = 1e-12
+        mycc_h2o.kernel()
 
-        myeom = eom_gccsd.EOMIP(mycc_n2)
+        myeom = eom_gccsd.EOMIP(mycc_h2o)
         e = myeom.ipccsd_star(nroots=1)
         self.assertAlmostEqual(e[0], 0.41066198624702982, 7)  # CFOUR: 0.41066196630606711, error ~1e-8
 
-        myeom = eom_gccsd.EOMEA(mycc_n2)
+        myeom = eom_gccsd.EOMEA(mycc_h2o)
         e = myeom.eaccsd_star(nroots=1)
         self.assertAlmostEqual(e[0], 0.25058983731814427, 7)  # CFOUR: 0.25058985399561007, error ~1e-8
 
-        myeom = eom_gccsd.EOMIP(mycc_n2)
+        myeom = eom_gccsd.EOMIP(mycc_h2o)
         e = myeom.ipccsd_t_a_star(nroots=2)
         self.assertAlmostEqual(e[0], 0.41171981379097428, 7)  # CFOUR: 0.41169584994017255, error ~2e-5
 
-        myeom = eom_gccsd.EOMEA(mycc_n2)
+        myeom = eom_gccsd.EOMEA(mycc_h2o)
         e = myeom.eaccsd_t_a_star(nroots=2)
         self.assertAlmostEqual(e[0], 0.25075321333964473, 7)  # CFOUR: 0.25072181725671577, error ~3e-5
 
