@@ -30,6 +30,22 @@ from pyscf.pbc.tools.pbc import super_cell
 
 einsum = lib.einsum
 
+def check_write_complete(filename, **kwargs):
+    '''Check for `completed` attr in file.'''
+    import os
+    mode = kwargs.get('mode', 'r')
+    if not os.path.isfile(filename):
+        return False
+    try:
+        f = h5py.File(filename, mode=mode, **kwargs)
+    except IOError:
+        return False
+    return f.attrs.get('completed', False)
+
+def check_read_success(filename, **kwargs):
+    write_complete = check_write_complete(filename, **kwargs)
+    return write_complete
+
 def _convert_to_int(kpt_indices):
     '''Convert all kpoint indices for 3-particle operator to integers.'''
     out_indices = [0]*6
@@ -174,7 +190,6 @@ class Condenser(object):
         del self.unique_job_args[job_name]
         self.offset = 0
 
-    @profile
     def _submit(self, job_name):
         unq_jobs = self.unique_job_args[job_name]
         jobs = self.job[job_name]
@@ -202,7 +217,6 @@ class Condenser(object):
 
 class DataHandler(Condenser):
     '''Wrapper for Condenser for our specific jobs'''
-    @profile
     def results(self, job_name, func, args,
                 hash_func=_slice_to_hashable, unhash_func=_hashable_to_slice):
         if not isinstance(args, list):
@@ -215,7 +229,6 @@ class DataHandler(Condenser):
             out.append(self.job_results[job_name][k])
         return out
 
-    @profile
     def request_data(self, kpt_indices, orb_indices, kconserv, *args):
         idx_args = get_data_slices(kpt_indices, orb_indices, kconserv)
         vvop_indices, vooo_indices, t2T_vvop_indices, t2T_vooo_indices = idx_args
@@ -328,7 +341,6 @@ def add_contribution_pt1(cc, kpt_indices, orb_indices, kconserv, data, out=None)
         out += 0.5 * einsum('abcijk,jkbc->ia', Ptmp_t3Tv, eris_Soovv) / eaa
     return out
 
-@profile
 def transpose_t2(t2, nkpts, nocc, nvir, kconserv, out=None):
     '''Creates t2.transpose(2,3,1,0).'''
     if out is None:
@@ -339,21 +351,22 @@ def transpose_t2(t2, nkpts, nocc, nvir, kconserv, out=None):
             kb = kconserv[ki,ka,kj]
             out[ka,kb,kj] = t2[ki,kj,ka].transpose(2,3,1,0)
     elif len(t2.shape) == 6 and t2.shape[:2] == (nkpts*(nkpts+1)//2, nkpts):
-        if isinstance(out, h5py.Dataset):  # Can't do multiple indexing vectors
-            for ki, kj, ka in product(range(nkpts), repeat=3):
-                kb = kconserv[ki,ka,kj]
-                # t2[ki,kj,ka] = t2[tril_index(ki,kj),ka]  ki<kj
-                # t2[kj,ki,kb] = t2[ki,kj,ka].transpose(1,0,3,2)  ki<kj
-                #              = t2[tril_index(ki,kj),ka].transpose(1,0,3,2)
+        #if isinstance(out, h5py.Dataset):  # Can't do multiple indexing vectors
+        for ki, kj, ka in product(range(nkpts), repeat=3):
+            kb = kconserv[ki,ka,kj]
+            # t2[ki,kj,ka] = t2[tril_index(ki,kj),ka]  ki<kj
+            # t2[kj,ki,kb] = t2[ki,kj,ka].transpose(1,0,3,2)  ki<kj
+            #              = t2[tril_index(ki,kj),ka].transpose(1,0,3,2)
+            if ki <= kj:
                 tril_idx = (kj*(kj+1))//2 + ki
                 out[ka,kb,kj] = t2[tril_idx,ka].transpose(2,3,1,0).copy()
-                out[kb,ka,ki] = t2[tril_idx,ka].transpose(3,2,0,1).copy()
-        else:
-            for ka in range(nkpts):
-                idx0, idx1 = np.tril_indices(nkpts)
-                kb = kconserv[idx0,ka,idx1]
-                out[ka,kb,idx0] = t2[:,ka].transpose(0,3,4,2,1)
-                out[kb,ka,idx1] = t2[:,ka].transpose(0,4,3,1,2)
+                out[kb,ka,ki] = out[ka,kb,kj].transpose(1,0,3,2)
+        #else:
+        #    for ka in range(nkpts):
+        #        idx0, idx1 = np.tril_indices(nkpts)
+        #        kb = kconserv[idx0,ka,idx1]
+        #        out[ka,kb,idx0] = t2[:,ka].transpose(0,3,4,2,1)
+        #        out[kb,ka,idx1] = t2[:,ka].transpose(0,4,3,1,2)
     else:
         raise ValueError('No known conversion for t2 shape %s' % t2.shape)
     return out
@@ -388,6 +401,18 @@ def create_eris_vooo(ooov, nkpts, nocc, nvir, kconserv, out=None):
     return out
 
 def _add_pt2(pt2, nkpts, kconserv, kpt_indices, orb_indices, val):
+    '''Adds term P(ia|jb)[tmp] to pt2.
+
+    P(ia|jb)(tmp[i,j,a,b]) = tmp[i,j,a,b] + tmp[j,i,b,a]
+
+    or equivalently for each i,j,a,b, pt2 is defined as
+
+    pt2[i,j,a,b] += tmp[i,j,a,b]
+    pt2[j,i,b,a] += tmp[i,j,a,b].transpose(1,0,3,2)
+
+    If pt2 is lower-triangular, only adds the RHS term that contributes
+    to the lower-triangular pt2.
+    '''
     ki, kj, ka = kpt_indices
     kb = kconserv[ki,ka,kj]
     idxi, idxj, idxa, idxb = [slice(None, None)
@@ -397,12 +422,12 @@ def _add_pt2(pt2, nkpts, kconserv, kpt_indices, orb_indices, val):
         pt2[ki,kj,ka,idxi,idxj,idxa,idxb] += val
         pt2[kj,ki,kb,idxi,idxj,idxb,idxa] += val.transpose(1,0,3,2)
     elif len(pt2.shape) == 6 and pt2.shape[:2] == (nkpts*(nkpts+1)//2, nkpts):
-        if ki <= kj:
+        if ki <= kj:  # Add tmp[i,j,a,b] to pt2[i,j,a,b]
             idx = (kj*(kj+1))//2 + ki
             pt2[idx,ka,idxi,idxj,idxa,idxb] += val
             if ki == kj:
                 pt2[idx,kb,idxj,idxi,idxb,idxa] += val.transpose(1,0,3,2)
-        else:
+        else:  # pt2[i,a,j,b] += tmp[j,i,a,b].transpose(1,0,3,2)
             idx = (ki*(ki+1))//2 + kj
             pt2[idx,kb,idxj,idxi,idxb,idxa] += val.transpose(1,0,3,2)
     else:
@@ -447,10 +472,8 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
             2009, Equation 10.33
     """
     fock = np.asarray(eris.fock)
-    nocc = cc.nocc
-    nmo = cc.nmo
-    nvir = nmo - nocc
-    nkpts = cc.nkpts
+    nkpts, nocc, nvir = t1.shape
+    nmo = nocc + nvir
     kconserv = cc.khelper.kconserv
     #assert(isinstance(eris, gccsd._PhysicistsERIs))
 
@@ -483,23 +506,30 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
     if build_ea_t3p2 and (Wcbej_out is None):
         Wcbej_out = np.zeros((nkpts,nkpts,nkpts,nvir,nvir,nvir,nocc), dtype=np.complex)
 
-    #@profile
     def get_t3_fast_new():
-        print 'creating temp arrays'
-        ftmp = None
-        if hasattr(eris, 'vvop') and hasattr(eris, 'eris_vooo_C'):
-            eris_vvop = eris.vvop
-            eris_vooo_C = eris.vooo_C
-        else:
-            ftmp = lib.H5TmpFile()
+        feri_tmp = None
+        h5py_kwargs = {}
+        feri_tmp_filename = 'tmp_t3_eris.h5'
+        if not check_read_success(feri_tmp_filename):
+            #feri_tmp = h5py.File(feri_tmp_filename, 'w', **h5py_kwargs)
+            feri_tmp = lib.H5TmpFile(feri_tmp_filename, 'w', **h5py_kwargs)
             dtype = np.complex
-            t2T_out = ftmp.create_dataset('t2T', (nkpts,nkpts,nkpts,nvir,nvir,nocc,nocc), dtype=dtype)
-            eris_vvop_out = ftmp.create_dataset('vvop', (nkpts,nkpts,nkpts,nvir,nvir,nocc,nmo), dtype=dtype)
-            eris_vooo_C_out = ftmp.create_dataset('vooo_C', (nkpts,nkpts,nkpts,nvir,nocc,nocc,nocc), dtype=dtype)
+            t2T_out = feri_tmp.create_dataset('t2T', (nkpts,nkpts,nkpts,nvir,nvir,nocc,nocc),  dtype=dtype)
+            eris_vvop_out = feri_tmp.create_dataset('vvop', (nkpts,nkpts,nkpts,nvir,nvir,nocc, nmo), dtype=dtype)
+            eris_vooo_C_out = feri_tmp.create_dataset('vooo_C', (nkpts,nkpts,nkpts,nvir,nocc,  nocc,nocc), dtype=dtype)
 
-            t2T = transpose_t2(t2, nkpts, nocc, nvir, kconserv, out=t2T_out)
-            eris_vvop = create_eris_vvop(eris.vovv, nkpts, nocc, nvir, kconserv, out=eris_vvop_out)
-            eris_vooo_C = create_eris_vooo(eris.ooov, nkpts, nocc, nvir, kconserv, out=eris_vooo_C_out)
+            transpose_t2(t2, nkpts, nocc, nvir, kconserv, out=t2T_out)
+            create_eris_vvop(eris.vovv, nkpts, nocc, nvir, kconserv, out=eris_vvop_out)
+            create_eris_vooo(eris.ooov, nkpts, nocc, nvir, kconserv, out=eris_vooo_C_out)
+
+            feri_tmp.attrs['completed'] = True
+            feri_tmp.close()
+
+        #feri_tmp = h5py.File(feri_tmp_filename, 'r', **h5py_kwargs)
+        feri_tmp = lib.H5TmpFile(feri_tmp_filename, 'r', **h5py_kwargs)
+        t2T = feri_tmp['t2T']
+        eris_vvop = feri_tmp['vvop']
+        eris_vooo_C = feri_tmp['vooo_C']
 
         t1T = np.asarray([t1[kpt].transpose(1,0) for kpt in range(nkpts)], order='C')
         fvo = np.asarray([fov[kpt].transpose(1,0) for kpt in range(nkpts)], order='C')
@@ -697,6 +727,7 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
                     fetcher.clean()
                 logger.timer_debug1(cc, 'EOM-CCSD T3[2] (%d,%d,%d,%d,%d) [total=%d]'%(ki,kj,kk,ka,kb,nkpts**5), *cput0)
 
+        feri_tmp.close()
     get_t3_fast_new()
 
     delta_ccsd_energy = cc.energy(pt1, pt2, eris) - ccsd_energy
