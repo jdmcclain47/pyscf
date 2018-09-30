@@ -406,13 +406,13 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(e[2], 0.67006510349161119, 6)
 
     def test_rand_t3p2_high_cost(self):
-        myeom_rand = eom_rccsd.EOMIP(mycc1)
-        erccsd = eom_rccsd.get_t3p2_amplitude_contribution_slow(myeom_rand, mycc1.t1, mycc1.t2, eris=None, copy_amps=True,
+        myeom_rand = mycc1
+        erccsd = eom_rccsd.get_t3p2_amplitude_contribution_slow(mycc1, mycc1.t1, mycc1.t2, eris=None, copy_amps=True,
                     build_t1_t2=True, build_ip_t3p2=False, build_ea_t3p2=False)[0]
 
         so_cc1 = cc.addons.convert_to_gccsd(mycc1)
-        so_myeom_rand = eom_gccsd.EOMIP(so_cc1)
-        egccsd =  eom_gccsd.get_t3p2_amplitude_contribution_slow(so_myeom_rand, so_cc1.t1, so_cc1.t2, eris=None, copy_amps=True,
+        so_myeom_rand = so_cc1
+        egccsd =  eom_gccsd.get_t3p2_amplitude_contribution_slow(so_cc1, so_cc1.t1, so_cc1.t2, eris=None, copy_amps=True,
                     build_t1_t2=True, build_ip_t3p2=False, build_ea_t3p2=False)[0]
         self.assertAlmostEqual(erccsd, 8.45616551e+03, 4)
         self.assertAlmostEqual(egccsd, 8.45616551e+03, 4)
