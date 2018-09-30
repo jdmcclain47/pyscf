@@ -88,7 +88,7 @@ def work_share_partition(tasks, interval=.02, loadmin=2):
 
             if task is not None:
                 tasks.append(task)
-            if isinstance(tasks[-1], str) and tasks[-1] == 'OUT_OF_TASK':
+            if (tasks == []) or isinstance(tasks[-1], str) and tasks[-1] == 'OUT_OF_TASK':
                 return
 
             time.sleep(interval)
