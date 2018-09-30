@@ -650,10 +650,10 @@ def get_t3p2_amplitude_contribution_slow(cc, t1, t2, eris=None, copy_amps=False,
                                            [ki, kj, kk, ka, kb])
             km = kconserv[kc, ki, ka]
 
-            oovv_ = eris.oovv[km, ki, kc]
-            Wmbkj[km, kb, kk] += 2. * lib.einsum('ijkabc,mica->mbkj', tmp_t3[ki, kj, kk, ka, kb], oovv_)
-            Wmbkj[km, kb, kk] -=      lib.einsum('jikabc,mica->mbkj', tmp_t3[kj, ki, kk, ka, kb], oovv_)
-            Wmbkj[km, kb, kk] -=      lib.einsum('kjiabc,mica->mbkj', tmp_t3[kk, kj, ki, ka, kb], oovv_)
+            _oovv = eris.oovv[km, ki, kc]
+            Wmbkj[km, kb, kk] += 2. * lib.einsum('ijkabc,mica->mbkj', tmp_t3[ki, kj, kk, ka, kb], _oovv)
+            Wmbkj[km, kb, kk] -=      lib.einsum('jikabc,mica->mbkj', tmp_t3[kj, ki, kk, ka, kb], _oovv)
+            Wmbkj[km, kb, kk] -=      lib.einsum('kjiabc,mica->mbkj', tmp_t3[kk, kj, ki, ka, kb], _oovv)
 
     if build_ea_t3p2:
         for ki, kj, kk, ka, kb in product(range(nkpts), repeat=5):
@@ -661,10 +661,10 @@ def get_t3p2_amplitude_contribution_slow(cc, t1, t2, eris=None, copy_amps=False,
                                            [ki, kj, kk, ka, kb])
             ke = kconserv[ki, ka, kk]
 
-            oovv_ = eris.oovv[ki, kk, ka]
-            Wcbej[kc, kb, ke] -= 2. * lib.einsum('ijkabc,ikae->cbej', tmp_t3[ki, kj, kk, ka, kb], oovv_)
-            Wcbej[kc, kb, ke] +=      lib.einsum('jikabc,ikae->cbej', tmp_t3[kj, ki, kk, ka, kb], oovv_)
-            Wcbej[kc, kb, ke] +=      lib.einsum('kjiabc,ikae->cbej', tmp_t3[kk, kj, ki, ka, kb], oovv_)
+            _oovv = eris.oovv[ki, kk, ka]
+            Wcbej[kc, kb, ke] -= 2. * lib.einsum('ijkabc,ikae->cbej', tmp_t3[ki, kj, kk, ka, kb], _oovv)
+            Wcbej[kc, kb, ke] +=      lib.einsum('jikabc,ikae->cbej', tmp_t3[kj, ki, kk, ka, kb], _oovv)
+            Wcbej[kc, kb, ke] +=      lib.einsum('kjiabc,ikae->cbej', tmp_t3[kk, kj, ki, ka, kb], _oovv)
 
     delta_ccsd_energy = cc.energy(pt1, pt2, eris) - ccsd_energy
     lib.logger.info(cc, 'CCSD energy T3[2] correction : %16.12e', delta_ccsd_energy)
