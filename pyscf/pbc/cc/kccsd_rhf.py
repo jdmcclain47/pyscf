@@ -362,7 +362,8 @@ def vector_to_nested(vector, struct, copy=True, ensure_size_matches=True):
         raise ValueError("Unknown object to compose: %s" % (str(struct)))
 
 
-def energy(cc, t1, t2, eris):
+def energy_full(cc, t1, t2, eris):
+    '''Energy function for full-rank t2.'''
     nkpts, nocc, nvir = t1.shape
     kconserv = cc.khelper.kconserv
     fock = eris.fock
@@ -386,6 +387,48 @@ def energy(cc, t1, t2, eris):
     if abs(e.imag) > 1e-4:
         logger.warn(cc, 'Non-zero imaginary part found in KRCCSD energy %s', e)
     return e.real
+
+
+def energy_tril(cc, t1, t2, eris):
+    '''Energy function for lower-triangular t2.'''
+    nkpts, nocc, nvir = t1.shape
+    kconserv = cc.khelper.kconserv
+    fock = eris.fock
+    e = 0.0 + 1j * 0.0
+    for ki in range(nkpts):
+        e += 2 * einsum('ia,ia', fock[ki, :nocc, nocc:], t1[ki])
+    tau = t1t1 = np.zeros(shape=t2.shape, dtype=t2.dtype)
+    for kj in range(nkpts):
+        for ki in range(kj+1):
+            ka = ki  # kb = kj
+            idx = (kj*(kj+1)//2) + ki
+            t1t1[idx, ka] = einsum('ia,jb->ijab', t1[ki], t1[kj])
+    tau += t2
+    for kj in range(nkpts):
+        for ki in range(kj+1):
+            idx = (kj*(kj+1))//2 + ki
+            for ka in range(nkpts):
+                kb = kconserv[ki, ka, kj]
+                e += 2 * einsum('ijab,ijab', tau[idx, ka], eris.oovv[ki, kj, ka])
+                e += -einsum('ijab,ijba', tau[idx, ka], eris.oovv[ki, kj, kb])
+
+                if ki != kj:
+                    e += 2 * einsum('ijba,ijba', tau[idx, kb], eris.oovv[ki, kj, kb])
+                    e += -einsum('ijba,ijab', tau[idx, kb], eris.oovv[ki, kj, ka])
+    e /= nkpts
+    if abs(e.imag) > 1e-4:
+        logger.warn(cc, 'Non-zero imaginary part found in KRCCSD energy %s', e)
+    return e.real
+
+
+def energy(cc, t1, t2, eris):
+    nkpts, nocc, nvir = t1.shape
+    if len(t2.shape) == 7 and t2.shape[:2] == (nkpts,nkpts):
+        return energy_full(cc, t1, t2, eris)
+    elif len(t2.shape) == 6 and t2.shape[:2] == (nkpts*(nkpts+1)//2,nkpts):
+        return energy_tril(cc, t1, t2, eris)
+    else:
+        raise ValueError('No conversion known for shape = %s' % t2.shape)
 
 
 def add_vvvv_(cc, Ht2, t1, t2, eris):
@@ -2178,7 +2221,7 @@ class _IMDS(object):
         else:
             self.t1 = cc.t1
             self.t2 = cc.t2
-        self._cc = cc  # TODO: delete me
+        self._cc = cc  # TODO: delete me; causes some issues wiht h5py
         self.eris = cc.eris
         self.kconserv = cc.khelper.kconserv
         self.made_ip_imds = False
@@ -2269,7 +2312,9 @@ class _IMDS(object):
         cput0 = (time.clock(), time.time())
 
         t1, t2, eris = self.t1, self.t2, self.eris
-        drv = imd.get_t3p2_amplitude_contribution_slow
+        from pyscf.pbc.cc.t3p2_experimental import get_t3p2_amplitude_contribution as t3p2_drv
+        drv = t3p2_drv
+        #drv = imd.get_t3p2_amplitude_contribution_slow
         if (not self._made_t3p2_correction):
             delta_ccsd_energy, t1, t2, Wmcik, Wacek = \
                 drv(self._cc, t1, t2, eris=eris, copy_amps=copy_amps_t3p2,
