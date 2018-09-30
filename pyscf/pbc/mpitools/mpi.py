@@ -64,29 +64,33 @@ def work_balanced_partition(tasks, costs=None):
 
 INQUIRY = 50050
 TASK = 50051
-def work_share_partition(tasks, interval=.02, loadmin=1):
-    loadmin = max(loadmin, len(tasks)//50//pool.size)
-    rest_tasks = [x for x in tasks[loadmin*pool.size:]]
-    tasks = tasks[loadmin*rank:loadmin*rank+loadmin]
+def work_share_partition(tasks, interval=.02, loadmin=2):
+    loadmin = min(loadmin, (len(tasks)+pool.size-1)//pool.size)
+    loadmin = max(loadmin, len(tasks)//50//pool.size, 1)
+    if rank == 0:
+        rest_tasks = list(tasks[loadmin*pool.size:])
+
+    tasks = list(tasks[loadmin*rank:loadmin*rank+loadmin])
     def distribute_task():
         while True:
-            load = len(tasks)
+            load = comm.gather(len(tasks))
             if rank == 0:
-                for i in range(pool.size):
-                    if i != 0:
-                        load = comm.recv(source=i, tag=INQUIRY)
-                    if rest_tasks:
-                        if load <= loadmin:
-                            task = rest_tasks.pop(0)
-                            comm.send(task, i, tag=TASK)
-                    else:
-                        comm.send('OUT_OF_TASK', i, tag=TASK)
+                if rest_tasks:
+                    jobs = [None] * pool.size
+                    for i in range(pool.size):
+                        if rest_tasks and load[i] < loadmin:
+                            jobs[i] = rest_tasks.pop(0)
+                else:
+                    jobs = ['OUT_OF_TASK'] * pool.size
+                task = comm.scatter(jobs)
             else:
-                comm.send(load, 0, tag=INQUIRY)
-            if comm.Iprobe(source=0, tag=TASK):
-                tasks.append(comm.recv(source=0, tag=TASK))
-                if isinstance(tasks[-1], str) and tasks[-1] == 'OUT_OF_TASK':
-                    return
+                task = comm.scatter(None)
+
+            if task is not None:
+                tasks.append(task)
+            if isinstance(tasks[-1], str) and tasks[-1] == 'OUT_OF_TASK':
+                return
+
             time.sleep(interval)
 
     tasks_handler = threading.Thread(target=distribute_task)
@@ -96,9 +100,11 @@ def work_share_partition(tasks, interval=.02, loadmin=1):
         if tasks:
             task = tasks.pop(0)
             if isinstance(task, str) and task == 'OUT_OF_TASK':
-                tasks_handler.join()
-                return
+                break
             yield task
+        else:
+            time.sleep(interval)
+    tasks_handler.join()
 
 def work_stealing_partition(tasks, interval=.0001):
     tasks = static_partition(tasks)
@@ -177,7 +183,7 @@ def bcast(buf, root=0):
 
 ## Useful when sending large batches of arrays
 #def safe_bcast(buf, root=0):
-    
+
 
 def reduce(sendbuf, op=MPI.SUM, root=0):
     sendbuf = numpy.asarray(sendbuf, order='C')
