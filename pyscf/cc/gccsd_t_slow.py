@@ -61,6 +61,66 @@ def kernel(cc, eris, t1=None, t2=None, max_memory=2000, verbose=logger.INFO):
     return et
 
 
+def t3p2_corrected_amplitudes(cc, t1, t2, eris):
+    """Calculates T1, T2 amplitudes corrected by second-order T3 contribution."""
+    fock = eris.fock
+    nocc, nvir = t1.shape
+
+    fov = fock[:nocc, nocc:]
+    foo = fock[:nocc, :nocc].diagonal()
+    fvv = fock[nocc:, nocc:].diagonal()
+
+    oovv = numpy.asarray(eris.oovv)
+    ovvv = numpy.asarray(eris.ovvv)
+    ooov = numpy.asarray(eris.ooov)
+    vooo = numpy.asarray(ooov).conj().transpose(3, 2, 1, 0)
+    vvvo = numpy.asarray(ovvv).conj().transpose(3, 2, 1, 0)
+
+    ccsd_energy = gccsd.energy(cc, t1, t2, eris)
+
+    # Slow, memory-intensize
+    t3 = lib.einsum('bcdk,ijad->ijkabc', vvvo, t2)
+    t3 -= lib.einsum('cmkj,imab->ijkabc', vooo, t2)
+    # P(ijk)
+    t3 = (t3 + t3.transpose(1,2,0,3,4,5) +
+               t3.transpose(2,0,1,3,4,5))
+    # P(abc)
+    t3 = (t3 + t3.transpose(0,1,2,4,5,3) +
+               t3.transpose(0,1,2,5,3,4))
+    eia = foo[:,None] - fvv[None,:]
+    eijab = eia[:,None,:,None] + eia[None,:,None,:]
+    eijkabc = eijab[:,:,None,:,:,None] + eia[None,None,:,None,None,:]
+    t3 /= eijkabc
+
+    eijk = foo[:, None, None] + foo[None, :, None] + foo[None, None, :]
+    eia = foo[:, None] - fvv[None, :]
+    eijab = eia[:, None, :, None] + eia[None, :, None, :]
+
+    # Correction to t1
+    pt1 = 0.25 * lib.einsum('mnef,imnaef->ia', oovv, t3)
+
+    # Correction to t2
+    pt2 = lib.einsum('ijmabe,me->ijab', t3, fov)
+    tmp = 0.5 * lib.einsum('ijmaef,mbfe->ijab', t3, ovvv)
+    tmp = tmp - tmp.transpose(0, 1, 3, 2)  # P(ab)
+    pt2 += tmp
+    tmp = - 0.5 * lib.einsum('imnabe,mnje->ijab', t3, ooov)
+    tmp = tmp - tmp.transpose(1, 0, 2, 3)  # P(ij)
+    pt2 += tmp
+
+    eia = foo[:, None] - fvv[None, :]
+    eijab = eia[:, None, :, None] + eia[None, :, None, :]
+
+    pt1 /= eia
+    pt2 /= eijab
+
+    pt1 += t1
+    pt2 += t2
+
+    delta_ccsd_energy = gccsd.energy(cc, pt1, pt2, eris) - ccsd_energy
+    return delta_ccsd_energy, pt1, pt2
+
+
 if __name__ == '__main__':
     from pyscf import gto
     from pyscf import scf
@@ -81,3 +141,5 @@ if __name__ == '__main__':
     mycc = cc.GCCSD(scf.addons.convert_to_ghf(mf)).set(conv_tol=1e-11).run()
     eris = mycc.ao2mo()
     print(kernel(mycc, eris) - et)
+
+    gccsd_t_a = t3p2_corrected_amplitudes(mycc, mycc.t1, mycc.t2, eris)[0]
