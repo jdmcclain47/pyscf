@@ -56,7 +56,7 @@ def _convert_to_int(kpt_indices):
     '''Convert all kpoint indices for 3-particle operator to integers.'''
     out_indices = [0]*6
     for ix, x in enumerate(kpt_indices):
-        assert isinstance(x, (int, np.int, np.ndarray, list))
+        assert isinstance(x, (int, np.int, np.ndarray, list, slice))
         if isinstance(x, (np.ndarray)) and (x.ndim == 0):
             out_indices[ix] = int(x)
         else:
@@ -90,10 +90,28 @@ def zip_kpoints(kpt_indices):
     out_indices = _tile_list(out_indices)
     return out_indices
 
+def _transpose_orb(orb_indices, transpose=(0, 1, 2)):
+    orb_indices = lib.flatten([[orb_indices[2*x], orb_indices[2*x+1]]
+                               for x in transpose])
+    return orb_indices
+
+def get_nstep_from_slice(sl):
+    length = 1
+    if isinstance(sl, slice):
+        cur = sl.start
+        length = 0
+        while cur < sl.stop:
+            length += 1
+            if sl.step is None:
+                cur += 1
+            else:
+                cur += sl.step
+    return length
+
 def get_data_slices(kpt_indices, orb_indices, kconserv):
     kpt_indices = zip_kpoints(kpt_indices)
-    if isinstance(kpt_indices[0], (int, np.int)):  # Ensure we are working
-        kpt_indices = [kpt_indices]                   # with a list of lists
+    if not hasattr(kpt_indices[0], '__len__'):  # Ensure we are working
+        kpt_indices = [kpt_indices]             # with a list of lists
 
     a0,a1,b0,b1,c0,c1 = orb_indices
     length = len(kpt_indices)*6
@@ -102,11 +120,12 @@ def get_data_slices(kpt_indices, orb_indices, kconserv):
         '''Get indices needed for t3 construction and a given transpose of (a,b,c).'''
         kpt_indices = ([kpt_indices[x] for x in transpose] +
                        [kpt_indices[x+3] for x in transpose])
-        orb_indices = lib.flatten([[orb_indices[2*x], orb_indices[2*x+1]]
-                                   for x in transpose])
+        orb_indices = _transpose_orb(orb_indices, transpose)
 
         ki, kj, kk, ka, kb, kc = kpt_indices
         a0, a1, b0, b1, c0, c1 = orb_indices
+
+        km_length = get_nstep_from_slice(kpt_indices[0])
 
         kf = kconserv[ka,ki,kb]
         km = kconserv[kc,kk,kb]
@@ -118,10 +137,13 @@ def get_data_slices(kpt_indices, orb_indices, kconserv):
         t2T_vooo_idx = [kc, kb, km, slice(c0,c1), sl00, sl00, sl00]
         return vvop_idx, vooo_idx, t2T_vvop_idx, t2T_vooo_idx
 
+    kf_length = get_nstep_from_slice(kpt_indices[0][0])
+    km_length = get_nstep_from_slice(kpt_indices[0][2])
+
     vvop_indices = [0] * length
     vooo_indices = [0] * length
-    t2T_vvop_indices = [0] * length
-    t2T_vooo_indices = [0] * length
+    t2T_vvop_indices = [0] * length * kf_length
+    t2T_vooo_indices = [0] * length * km_length
 
     transpose = [(0, 1, 2), (0, 2, 1), (1, 0, 2),
                  (1, 2, 0), (2, 0, 1), (2, 1, 0)]
@@ -139,14 +161,14 @@ def get_data_slices(kpt_indices, orb_indices, kconserv):
 
 def get_data_slices2(kpt_indices, orb_indices, kconserv):
     kpt_indices = zip_kpoints(kpt_indices)
-    if isinstance(kpt_indices[0], (int, np.int)):  # Ensure we are working
-        kpt_indices = [kpt_indices]                   # with a list of lists
+    if not hasattr(kpt_indices[0], '__len__'):  # Ensure we are working
+        kpt_indices = [kpt_indices]             # with a list of lists
 
     a0, a1, b0, b1, c0, c1 = orb_indices
     length = len(kpt_indices)
 
     vvop_indices = [0] * length
-    ooov_indices = [0] * length
+    vooo_indices = [0] * length
     oovv_indices1 = [0] * length
     oovv_indices2 = [0] * length
 
@@ -154,19 +176,14 @@ def get_data_slices2(kpt_indices, orb_indices, kconserv):
         ki, kj, kk, ka, kb, kc = kpt
         sl00 = slice(None, None)
 
-        kd = kconserv[ka,ki,kb]
         vvop_indices[ikpt] = [ka, kb, ki, slice(a0,a1), slice(b0,b1), sl00, sl00]
-
-        km = kconserv[kc, kk, kb]
-        ooov_indices[ikpt] = [kj, ki, km, sl00, sl00, sl00, slice(a0,a1)]
+        vooo_indices[ikpt] = [ka, ki, kj, slice(a0,a1), sl00, sl00, sl00]
 
         km = kconserv[ka,ki,kc]
         oovv_indices1[ikpt] = [km, ki, kc, sl00, sl00, slice(c0,c1), slice(a0,a1)]
-
-        ke = kconserv[ki,ka,kk]
         oovv_indices2[ikpt] = [ki, kk, ka, sl00, sl00, slice(a0,a1), sl00]
 
-    return vvop_indices, ooov_indices, oovv_indices1, oovv_indices2
+    return vvop_indices, vooo_indices, oovv_indices1, oovv_indices2
 
 def _slice_to_hashable(slice_list):
     '''Creates a hashable tuple and descriptor from iterable of integer
@@ -200,7 +217,7 @@ class Condenser(object):
         self.job_results = {}
         self.verbose = verbose
         self.stdout = sys.stdout
-        self.NMAX = 400  # max cache-size
+        self.NMAX = 300  # max cache-size
         self.offset = 0
         self.unique_job_args = {}
         pass
@@ -208,6 +225,7 @@ class Condenser(object):
     def _job_name_results(self, job_name):
         return job_name + '_res'
 
+    @profile
     def add_job(self, job_name, func, arg,
                 hash_func=_slice_to_hashable, unhash_func=_hashable_to_slice):
         '''Update list of jobs requested, unique jobs, and initialize dict
@@ -266,6 +284,7 @@ class DataHandler(Condenser):
             out.append(self.job_results[job_name][k])
         return out
 
+    @profile
     def request_data(self, kpt_indices, orb_indices, kconserv, *args):
         idx_args = get_data_slices(kpt_indices, orb_indices, kconserv)
         vvop_indices, vooo_indices, t2T_vvop_indices, t2T_vooo_indices = idx_args
@@ -281,17 +300,21 @@ class DataHandler(Condenser):
         self.submit('t2Tvooo')
         return
 
+    @profile
     def request_data2(self, kpt_indices, orb_indices, kconserv, *args):
         idx_args = get_data_slices2(kpt_indices, orb_indices, kconserv)
-        vvop_indices, ooov_indices, oovv_indices1, oovv_indices2 = idx_args
+        vvop_indices, vooo_indices, oovv_indices1, oovv_indices2 = idx_args
         for task in range(len(vvop_indices)):
             self.add_job('vvop', args[0], vvop_indices[task])
-            self.add_job('ooov', args[1], ooov_indices[task])
+        for task in range(len(vooo_indices)):
+            self.add_job('vooo', args[1], vooo_indices[task])
+        for task in range(len(oovv_indices1)):
             self.add_job('oovv', args[2], oovv_indices1[task])
+        for task in range(len(oovv_indices2)):
             self.add_job('oovv', args[3], oovv_indices2[task])
 
         self.submit('vvop')
-        self.submit('ooov')
+        self.submit('vooo')
         self.submit('oovv')
         return
 
@@ -307,20 +330,21 @@ class DataHandler(Condenser):
 
     def get_data2(self, kpt_indices, orb_indices, kconserv, *args):
         idx_args = get_data_slices2(kpt_indices, orb_indices, kconserv)
-        vvop_indices, ooov_indices, oovv_indices1, oovv_indices2 = idx_args
+        vvop_indices, vooo_indices, oovv_indices1, oovv_indices2 = idx_args
 
         vvop = self.results('vvop', args[0], vvop_indices)
-        ooov = self.results('ooov', args[1], ooov_indices)
+        vooo = self.results('vooo', args[1], vooo_indices)
         oovv1 = self.results('oovv', args[2], oovv_indices1)
         oovv2 = self.results('oovv', args[3], oovv_indices2)
-        return vvop[0], ooov[0], oovv1[0], oovv2[0]
+        return vvop[0], vooo[0], oovv1[0], oovv2[0]
 
     def clean(self):
-        jobs = ['vvop', 'vooo', 't2Tvvop', 't2Tvooo']
-        for j in jobs:
-            if len(self.job[j]) > self.NMAX:
-                #logger.debug3(self, 'Clearing cache for job %s', j)
-                self._delete_job(j)
+        for j in self.job.keys():
+            try:
+                if len(self.job_results[j]) > self.NMAX:
+                    self._delete_job(j)
+            except:
+                pass
         return
 
 def get_full_t3p2(cc, t1, t2, eris):
@@ -443,7 +467,8 @@ def create_eris_vvop(vovv, nkpts, nocc, nvir, kconserv, out=None):
 
     for ki, kj, ka in product(range(nkpts), repeat=3):
         kb = kconserv[ki,ka,kj]
-        out[ki,kj,ka,:,:,:,nocc:] = vovv[kb,ka,kj].conj().transpose(3,2,1,0)
+        for a0, a1 in lib.prange(0, nvir, 8):
+            out[ki,kj,ka,a0:a1,:,:,nocc:] = vovv[kb,ka,kj,:,:,:,a0:a1].conj().transpose(3,2,1,0)
     return out
 
 def create_eris_vooo(ooov, nkpts, nocc, nvir, kconserv, out=None):
@@ -493,6 +518,8 @@ def _add_pt2(pt2, nkpts, kconserv, kpt_indices, orb_indices, val):
             pt2[idx,kb,idxj,idxi,idxb,idxa] += val.transpose(1,0,3,2)
     else:
         raise ValueError('No known conversion for t2 shape %s' % t2.shape)
+
+T3_NCONTRACT = 0
 
 def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
                                     build_t1_t2=True, build_ip_t3p2=False,
@@ -573,6 +600,7 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
     if build_ea_t3p2 and (Wcbej_out is None):
         Wcbej_out = np.zeros((nkpts,nkpts,nkpts,nvir,nvir,nvir,nocc), dtype=np.complex)
 
+    @profile
     def get_t3_fast_new():
         print 'creating temp arrays'
         feri_tmp = None
@@ -584,6 +612,7 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
             dtype = np.complex
             t2T_out = feri_tmp.create_dataset('t2T', (nkpts,nkpts,nkpts,nvir,nvir,nocc,nocc), dtype=dtype)
             eris_vvop_out = feri_tmp.create_dataset('vvop', (nkpts,nkpts,nkpts,nvir,nvir,nocc,nmo), dtype=dtype)
+                                                    #chunks=(nkpts,nkpts,nkpts,8,8,nocc,nmo))
             eris_vooo_C_out = feri_tmp.create_dataset('vooo_C', (nkpts,nkpts,nkpts,nvir,nocc,nocc,nocc), dtype=dtype)
 
             if rank == 0:
@@ -607,15 +636,18 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
 
         from pyscf.cc import _ccsd
         tasks = []
-        kpt_blksize, vir_blksize = 2, 10
-        for a0, a1 in lib.prange(0, nvir, vir_blksize):
-            for b0, b1 in lib.prange(0, nvir, vir_blksize):
-                for c0, c1 in lib.prange(0, nvir, vir_blksize):
+        vir_blksize = (nvir, nvir, nvir)
+        #vir_blksize = (11, 11, 11)
+        #vir_blksize = (8, 8, 8)
+        for a0, a1 in lib.prange(0, nvir, vir_blksize[0]):
+            for b0, b1 in lib.prange(0, nvir, vir_blksize[1]):
+                for c0, c1 in lib.prange(0, nvir, vir_blksize[2]):
                     tasks.append((a0,a1,b0,b1,c0,c1))
+        #assert vir_blksize == (8, 8, 8)  # Assert because chunksize set manually
 
         def read_vvop(idx):
             return eris_vvop[idx]
-        def read_vooo(idx):
+        def read_vooo_C(idx):
             return eris_vooo_C[idx]
         def get_t2Tvvop(idx):
             return t2T[idx]
@@ -627,13 +659,21 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
             return eris.ooov[idx]
         def read_vovv(idx):
             return eris.vovv[idx]
-        args = (read_vvop, read_vooo, get_t2Tvvop, get_t2Tvooo)
-        args2 = (read_vvop, read_ooov, read_oovv, read_oovv)
+        args = (read_vvop, read_vooo_C, get_t2Tvvop, get_t2Tvooo)
+        args2 = (read_vvop, read_vooo_C, read_oovv, read_oovv)
 
-        def contract_t3Tv(kpt_indices, orb_indices, data):
+        @profile
+        def contract_t3Tv(kpt_indices, orb_indices, data, out=None):
             '''Calculate t3T(ransposed) array using C driver.'''
+            global T3_NCONTRACT
+            T3_NCONTRACT += 1
             ki, kj, kk, ka, kb, kc = kpt_indices
             a0, a1, b0, b1, c0, c1 = orb_indices
+            if out is None:
+                t3T = np.empty((a1-a0,b1-b0,c1-c0) + (nocc,)*3, dtype=np.complex, order='C')
+            else:
+                t3T = out
+
             slices = np.array([a0, a1, b0, b1, c0, c1], dtype=np.int32)
 
             mo_offset = np.array([ki*nmo, kj*nmo, kk*nmo,
@@ -674,9 +714,6 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
             data_ptrs = [x.ctypes.data_as(ctypes.c_void_p) for x in data]
             data_ptrs = (ctypes.c_void_p*24)(*data_ptrs)
 
-            a0, a1, b0, b1, c0, c1 = task
-            t3T = np.empty((a1-a0,b1-b0,c1-c0) + (nocc,)*3, dtype=np.complex, order='C')
-
             drv = _ccsd.libcc.zcontract_t3T
             drv(t3T.ctypes.data_as(ctypes.c_void_p),
                 mo_energy.ctypes.data_as(ctypes.c_void_p),
@@ -686,9 +723,10 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
                 mo_offset.ctypes.data_as(ctypes.c_void_p),
                 slices.ctypes.data_as(ctypes.c_void_p),
                 data_ptrs)
+            #print 'creating ', ki, kj, kk, ka, kb, kc, lib.finger(t3T)
             return t3T
 
-        def add_and_permute(kpt_indices, orb_indices, data):
+        def add_and_permute(kpt_indices, orb_indices, data, perm='ijk'):
             '''Performs permutation and addition of t3 temporary arrays.'''
             ki, kj, kk, ka, kb, kc = kpt_indices
             a0, a1, b0, b1, c0, c1 = orb_indices
@@ -700,127 +738,472 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
             tmp_t3Tv_ijk = np.asarray(data[0], dtype=np.complex, order='C')
             tmp_t3Tv_jik = np.asarray(data[1], dtype=np.complex, order='C')
             tmp_t3Tv_kji = np.asarray(data[2], dtype=np.complex, order='C')
+            out_ijk = np.empty(data[0].shape, dtype=np.complex, order='C')
+
+            if perm == 'ijk':
+                swap_idx = 0
+            elif perm == 'jik':
+                swap_idx = 1
+            elif perm == 'kji':
+                swap_idx = 2
+            elif perm == 'ikj':
+                swap_idx = 3
+            elif perm == 'jki':
+                swap_idx = 4
+            elif perm == 'kij':
+                swap_idx = 5
+            else:
+                raise ValueError('No known permutation %s' % perm)
 
             drv = _ccsd.libcc.MPICCadd_and_permute_t3T
             drv(ctypes.c_int(nocc), ctypes.c_int(nvir),
+                ctypes.c_int(swap_idx),
+                out_ijk.ctypes.data_as(ctypes.c_void_p),
                 tmp_t3Tv_ijk.ctypes.data_as(ctypes.c_void_p),
                 tmp_t3Tv_jik.ctypes.data_as(ctypes.c_void_p),
                 tmp_t3Tv_kji.ctypes.data_as(ctypes.c_void_p),
                 mo_offset.ctypes.data_as(ctypes.c_void_p),
                 slices.ctypes.data_as(ctypes.c_void_p))
-            # drv has overwritten tmp_t3Tv_ijk
-            Ptmp_t3Tv = tmp_t3Tv_ijk  #2.*t3Tv_ijk - t3Tv_jik.transpose(0,1,2,4,3,5)
-                                      #            - t3Tv_kji.transpose(0,1,2,5,4,3)
-            return Ptmp_t3Tv
+            # for ki,kj,kk, this operation is:
+            #     out = 2.*t3Tv_ijk - t3Tv_jik.transpose(0,1,2,4,3,5)
+            #                       - t3Tv_kji.transpose(0,1,2,5,4,3)
+            return out_ijk
 
-        kblocks = []
-        for ka, kb, ki, kj in product(range(nkpts), repeat=4):
-            kblocks.append((ka,kb,ki,kj))
-
-        #full_t3v_ijk = get_full_t3p2(cc, t1, t2, eris)  # Useful for checking
+        kpt_blocks = []
+        #kpt_blksize = [nkpts]*3
+        kpt_blksize = [6,6,6]
+        for ki0, ki1 in lib.prange(0, nkpts, kpt_blksize[0]):
+            for kj0, kj1 in lib.prange(0, nkpts, kpt_blksize[1]):
+                for kk0, kk1 in lib.prange(0, nkpts, kpt_blksize[2]):
+                    kpt_blocks.append((ki0,ki1,kj0,kj1,kk0,kk1))
+        #assert tuple(kpt_blksize) == (nkpts,nkpts,nkpts)
 
         comm.Barrier()
         fetcher = DataHandler()
-        cput1 = (time.clock(), time.time())
-        for ka, kb, ki, kj in mpi.work_share_partition(kblocks, loadmin=2):
+        cput2 = (time.clock(), time.time())
+        count = 0
+        ntotal_kpts = nkpts**2*(nkpts*(nkpts+1)*(nkpts+2))//6
+        logger.debug(cc, 'Generating integrals for %3d k-points.', ntotal_kpts)
+        logger.debug(cc, '    K-point block size (n=%4d): (%3d %3d %3d).', len(kpt_blocks), *kpt_blksize)
+        logger.debug(cc, '    AO virt block size (n=%4d): (%3d %3d %3d).', len(tasks), *vir_blksize)
+        logger.debug(cc, '    Number of looped blocks: %6d.', len(kpt_blocks)*len(tasks)*(nkpts*(nkpts+1))//2)
+        time_spent_t3 = 0
+        time_spent_t2 = 0
+        for kblock in mpi.work_share_partition(list(np.arange(len(kpt_blocks) * nkpts**2))):
+        #for kblock in mpi.work_stealing_partition(list(np.arange(50))):
+            ka, kb = divmod(kblock / len(kpt_blocks), nkpts)
+            iblock = kblock % len(kpt_blocks)
+            ki0, ki1, kj0, kj1, kk0, kk1 = kpt_blocks[iblock]
             eaa = foo[ka][:, None] - fvv[ka][None, :]
-            kc_list = kpts_helper.get_kconserv3(cc._scf.cell, cc.kpts,
-                                                [ki, kj, range(nkpts), ka, kb])
-            # TODO: one might block over [ki,kj,kk] as well for improved performance
-            for kk in range(nkpts):
-                oovv_jXX = eris.oovv[kj, :, :]
+            ebb = foo[kb][:, None] - fvv[kb][None, :]
+            if ka > kb:
+                continue
+
+            logger.debug1(cc, 'Beginning K-block(%d:%d,%d:%d,%d:%d) ka,kb=(%d,%d)' %
+                          (ki0,ki1,kj0,kj1,kk0,kk1,ka,kb))
+            kpt_seen = 0  # To help with indexing on which iteration we are on
+            for task_id, task in enumerate(tasks):
+                a0, a1, b0, b1, c0, c1 = task
+
+                kc_list = []
+                for ki in range(ki0,ki1):
+                  for kj in range(kj0,kj1):
+                    kc_list.extend(kpts_helper.get_kconserv3(cc._scf.cell, cc.kpts,
+                                                             [ki, kj, range(kk0,kk1), ka, kb]))
+
+                tmp_t3Tv_ijk = np.empty(((ki1-ki0),(kj1-kj0),(kk1-kk0),(a1-a0),(b1-b0),(c1-c0),nocc,nocc,nocc), dtype=np.complex)
+                tmp_t3Tv_jik = np.empty(((kj1-kj0),(ki1-ki0),(kk1-kk0),(a1-a0),(b1-b0),(c1-c0),nocc,nocc,nocc), dtype=np.complex)
+                tmp_t3Tv_kji = np.empty(((kk1-kk0),(kj1-kj0),(ki1-ki0),(a1-a0),(b1-b0),(c1-c0),nocc,nocc,nocc), dtype=np.complex)
+                tmp_t3Tv_ikj = np.empty(((ki1-ki0),(kk1-kk0),(kj1-kj0),(a1-a0),(b1-b0),(c1-c0),nocc,nocc,nocc), dtype=np.complex)
+                tmp_t3Tv_jki = np.empty(((kj1-kj0),(kk1-kk0),(ki1-ki0),(a1-a0),(b1-b0),(c1-c0),nocc,nocc,nocc), dtype=np.complex)
+                tmp_t3Tv_kij = np.empty(((kk1-kk0),(ki1-ki0),(kj1-kj0),(a1-a0),(b1-b0),(c1-c0),nocc,nocc,nocc), dtype=np.complex)
+
                 cput0 = (time.clock(), time.time())
+                cput1 = (time.clock(), time.time())
+                for zki, ki in enumerate(range(ki0, ki1)):
+                  for zkj, kj in enumerate(range(kj0, kj1)):  # Fill in `jik` from `ijk`
+                    for zkk, kk in enumerate(range(kk0, kk1)):
+                      kc = kc_list[zki*(kk1-kk0)*(kj1-kj0) + zkj*(kk1-kk0) + zkk]
+                      if kb > kc:
+                          continue
+                      kpt_seen = 1
 
-                for task_id, task in enumerate(tasks):
-                    a0, a1, b0, b1, c0, c1 = task
+                      kpt_indices = [ki,kj,kk,ka,kb,kc]
+                      fetcher.request_data(kpt_indices, task, kconserv, *args)
+                      data1 = fetcher.get_data(kpt_indices, task, kconserv, *args)
+                      contract_t3Tv(kpt_indices, task, data1, out=tmp_t3Tv_ijk[zki, zkj, zkk])
+                      if ki in range(kj0,kj1) and kj in range(ki0,ki1):
+                          tmp_t3Tv_jik[ki-kj0, kj-ki0, zkk] = tmp_t3Tv_ijk[zki, zkj, zkk]
+                      else:
+                          kpt_indices = [kj,ki,kk,ka,kb,kc]
+                          fetcher.request_data(kpt_indices, task, kconserv, *args)
+                          data1 = fetcher.get_data(kpt_indices, task, kconserv, *args)
+                          contract_t3Tv(kpt_indices, task, data1, out=tmp_t3Tv_jik[zkj, zki, zkk])
 
-                    tmp_t3Tv_ijk = np.empty(((a1-a0),(b1-b0),(c1-c0),nocc,nocc,nocc), dtype=np.complex)
-                    tmp_t3Tv_jik = np.empty(((a1-a0),(b1-b0),(c1-c0),nocc,nocc,nocc), dtype=np.complex)
-                    tmp_t3Tv_kji = np.empty(((a1-a0),(b1-b0),(c1-c0),nocc,nocc,nocc), dtype=np.complex)
+                      if ki in range(kk0,kk1) and kk in range(ki0,ki1):
+                          tmp_t3Tv_kji[ki-kk0, zkj, kk-ki0] = tmp_t3Tv_ijk[zki, zkj, zkk]
+                      else:
+                          kpt_indices = [kk,kj,ki,ka,kb,kc]
+                          fetcher.request_data(kpt_indices, task, kconserv, *args)
+                          data1 = fetcher.get_data(kpt_indices, task, kconserv, *args)
+                          contract_t3Tv(kpt_indices, task, data1, out=tmp_t3Tv_kji[zkk, zkj, zki])
 
-                    kc = kc_list[kk]
-                    kpt_indices = [[ki,kj,kk,ka,kb,kc],
-                                   [kj,ki,kk,ka,kb,kc],
-                                   [kk,kj,ki,ka,kb,kc]]
+                      if kk in range(kj0,kj1) and kj in range(kk0,kk1):
+                          tmp_t3Tv_ikj[zki, kj-kk0, kk-kj0] = tmp_t3Tv_ijk[zki, zkj, zkk]
+                      else:
+                          kpt_indices = [ki,kk,kj,ka,kb,kc]
+                          fetcher.request_data(kpt_indices, task, kconserv, *args)
+                          data1 = fetcher.get_data(kpt_indices, task, kconserv, *args)
+                          contract_t3Tv(kpt_indices, task, data1, out=tmp_t3Tv_ikj[zki, zkk, zkj])
+                      fetcher.clean()
 
-                    fetcher.request_data(kpt_indices[0], task, kconserv, *args)
-                    fetcher.request_data(kpt_indices[1], task, kconserv, *args)
-                    fetcher.request_data(kpt_indices[2], task, kconserv, *args)
+                for zki, ki in enumerate(range(ki0, ki1)):
+                  for zkj, kj in enumerate(range(kj0, kj1)):  # Fill in `jki` from `jik`
+                    for zkk, kk in enumerate(range(kk0, kk1)):
+                      kc = kc_list[zki*(kk1-kk0)*(kj1-kj0) + zkj*(kk1-kk0) + zkk]
+                      if kb > kc:
+                          continue
+                      kpt_seen = 1
 
-                    fetcher.request_data2(kpt_indices[0], task, kconserv, *args2)
+                      if ki in range(kk0,kk1) and kk in range(ki0,ki1):
+                          tmp_t3Tv_jki[zkj, ki-kk0, kk-ki0] = tmp_t3Tv_jik[zkj, zki, zkk]
+                      else:
+                          kpt_indices = [kj,kk,ki,ka,kb,kc]
+                          fetcher.request_data(kpt_indices, task, kconserv, *args)
+                          data1 = fetcher.get_data(kpt_indices, task, kconserv, *args)
+                          contract_t3Tv(kpt_indices, task, data1, out=tmp_t3Tv_jki[zkj, zkk, zki])
+                      fetcher.clean()
 
-                    data1 = fetcher.get_data(kpt_indices[0], task, kconserv, *args)
-                    data2 = fetcher.get_data(kpt_indices[1], task, kconserv, *args)
-                    data3 = fetcher.get_data(kpt_indices[2], task, kconserv, *args)
+                for zki, ki in enumerate(range(ki0, ki1)):
+                  for zkj, kj in enumerate(range(kj0, kj1)):  # Fill in `kij` from `kji`
+                    for zkk, kk in enumerate(range(kk0, kk1)):
+                      kc = kc_list[zki*(kk1-kk0)*(kj1-kj0) + zkj*(kk1-kk0) + zkk]
+                      if kb > kc:
+                          continue
+                      kpt_seen = 1
 
-                    tmp_t3Tv_ijk = contract_t3Tv(kpt_indices[0],task,data1)
-                    tmp_t3Tv_jik = contract_t3Tv(kpt_indices[1],task,data2)
-                    tmp_t3Tv_kji = contract_t3Tv(kpt_indices[2],task,data3)
-                    Ptmp_t3Tv = add_and_permute(kpt_indices[0], task,
-                                    (tmp_t3Tv_ijk,tmp_t3Tv_jik,tmp_t3Tv_kji))
+                      if ki in range(kj0,kj1) and ki in range(kj0,kj1):
+                          tmp_t3Tv_kij[zkk, kj-ki0, ki-kj0] = tmp_t3Tv_kji[zkk, zkj, zki]
+                      else:
+                          kpt_indices = [kk,ki,kj,ka,kb,kc]
+                          fetcher.request_data(kpt_indices, task, kconserv, *args)
+                          data1 = fetcher.get_data(kpt_indices, task, kconserv, *args)
+                          contract_t3Tv(kpt_indices, task, data1, out=tmp_t3Tv_kij[zkk, zki, zkj])
+                      fetcher.clean()
 
-                    # Performing contribution to pt1
-                    eris_Soovv = None
-                    if ki == ka and kc == kconserv[kj, kb, kk]:
-                        eris_Soovv = (2.*oovv_jXX[kk,kb,:,:,b0:b1,c0:c1] -
-                                         oovv_jXX[kk,kc,:,:,c0:c1,b0:b1].transpose(0,1,3,2))
 
-                    add_contribution_pt1(cc, kpt_indices[0], task, kconserv,
-                                         (Ptmp_t3Tv,eris_Soovv,eaa[:,a0:a1]),
-                                         out=pt1[ka,:,a0:a1])
+                # For debugging...
+                #
+                #for zki, ki in enumerate(range(ki0, ki1)):
+                #  for zkj, kj in enumerate(range(kj0, kj1)):
+                #    new_kc_list = kpts_helper.get_kconserv3(cc._scf.cell, cc.kpts,
+                #                                        [ki, kj, range(kk0,kk1), ka, kb])
+                #    for zkk, kk in enumerate(range(kk0, kk1)):
+                #        kc = new_kc_list[zkk]
+                #        print 'requesting ', kj, ki, kk, ka, kb, kc
+                #        kpt_indices = [kj,ki,kk,ka,kb,kc]
+                #        fetcher.request_data(kpt_indices, task, kconserv, *args)
+                #        data1 = fetcher.get_data(kpt_indices, task, kconserv, *args)
+                #        print np.linalg.norm(tmp_t3Tv_jik[zkj,zki,zkk] - contract_t3Tv(kpt_indices, task, data1))
+                #        kpt_indices = [kk,kj,ki,ka,kb,kc]
+                #        fetcher.request_data(kpt_indices, task, kconserv, *args)
+                #        data1 = fetcher.get_data(kpt_indices, task, kconserv, *args)
+                #        print np.linalg.norm(tmp_t3Tv_kji[zkk,zkj,zki] - contract_t3Tv(kpt_indices, task, data1))
+                #        kpt_indices = [kj,ki,kk,ka,kb,kc]
+                #        fetcher.request_data(kpt_indices, task, kconserv, *args)
+                #        data1 = fetcher.get_data(kpt_indices, task, kconserv, *args)
+                #        print np.linalg.norm(tmp_t3Tv_jik[zkj,zki,zkk] - contract_t3Tv(kpt_indices, task, data1))
+                #        kpt_indices = [ki,kk,kj,ka,kb,kc]
+                #        fetcher.request_data(kpt_indices, task, kconserv, *args)
+                #        data1 = fetcher.get_data(kpt_indices, task, kconserv, *args)
+                #        print np.linalg.norm(tmp_t3Tv_ikj[zki,zkk,zkj] - contract_t3Tv(kpt_indices, task, data1))
+                #        kpt_indices = [kk,ki,kj,ka,kb,kc]
+                #        fetcher.request_data(kpt_indices, task, kconserv, *args)
+                #        data1 = fetcher.get_data(kpt_indices, task, kconserv, *args)
+                #        print np.linalg.norm(tmp_t3Tv_kij[zkk,zki,zkj] - contract_t3Tv(kpt_indices, task, data1))
+                #        kpt_indices = [kj,kk,ki,ka,kb,kc]
+                #        fetcher.request_data(kpt_indices, task, kconserv, *args)
+                #        data1 = fetcher.get_data(kpt_indices, task, kconserv, *args)
+                #        print np.linalg.norm(tmp_t3Tv_jki[zkj,zkk,zki] - contract_t3Tv(kpt_indices, task, data1))
 
-                    # Performing contribution to pt2
-                    if ki == ka and kc == kconserv[kj, kb, kk]:
-                        ejkbc = (foo[kj][:,None,None,None] + foo[kk][None,:,None,None] -
-                                fvv[kb,b0:b1][None,None,:,None] - fvv[kc,c0:c1][None,None,None,:])
-                        tmp = einsum('abcijk,ia->jkbc', Ptmp_t3Tv, 0.5*fov[ki,:,a0:a1]) / ejkbc
-                        _add_pt2(pt2, nkpts, kconserv, [kj,kk,kb], [None,None,(b0,b1),(c0,c1)], tmp)
+                if kpt_seen:
+                    time_spent_t3 += time.time() - cput0[1]
+                    logger.timer_debug1(cc,
+                        '      t3[2] gen (%d:%d,%d:%d,%d:%d) ka,kb=(%d,%d)' %
+                        (ki0,ki1,kj0,kj1,kk0,kk1,ka,kb), *cput0)
+                else:
+                    continue  # Skip to next ieration; don't grab data
 
-                    data4 = fetcher.get_data2(kpt_indices[0], task, kconserv, *args2)
-                    tmp_vvop, tmp_ooov, tmp_oovv1, tmp_oovv2 = data4
+                count = 0
+                cput0 = (time.clock(), time.time())
+                for zkj, kj in enumerate(range(kj0,kj1)):
+                  oovv_jkX = eris.oovv[zkj,kk0:kk1,:]
+                  for zkk, kk in enumerate(range(kk0,kk1)):
+                    for zki, ki in enumerate(range(ki0,ki1)):
+                      kc = kc_list[zki*(kk1-kk0)*(kj1-kj0) + zkj*(kk1-kk0) + zkk]
+                      count += 1
+                      if kb > kc:
+                          continue
+                      kpt_indices = [[ki,kj,kk,ka,kb,kc],
+                                     [ki,kj,kk,kb,ka,kc],
+                                     [ki,kj,kk,kc,kb,ka],
+                                     [ki,kj,kk,ka,kc,kb],
+                                     [ki,kj,kk,kc,ka,kb],
+                                     [ki,kj,kk,kb,kc,ka]]
 
-                    kd = kconserv[ka,ki,kb]
-                    #if kk == kconserv[kd, kj, kc]:
-                    tmp_vvov = tmp_vvop[:,:,:,nocc:]
-                    ejkdc = (foo[kj][:,None,None,None] + foo[kk][None,:,None,None] -
-                             fvv[kd][None,None,:,None] - fvv[kc,c0:c1][None,None,None,:])
-                    tmp = einsum('abcijk,abid->jkdc', Ptmp_t3Tv, tmp_vvov.conj()) / ejkdc
-                    _add_pt2(pt2, nkpts, kconserv, [kj,kk,kd], [None,None,None,(c0,c1)], tmp)
+                      ecc = foo[kc][:, None] - fvv[kc][None, :]
 
-                    km = kconserv[kc, kk, kb]
-                    #eris_ooov = eris.ooov[kj,ki,km,:,:,:,a0:a1]
-                    #if ka == kconserv[ki, km, kj]:
-                    # TODO: do transpose after in one-shot (rather than at each step?)
-                    emkbc = (foo[km][:,None,None,None] + foo[kk][None,:,None,None] -
-                            fvv[kb,b0:b1][None,None,:,None] - fvv[kc,c0:c1][None,None,None,:])
-                    tmp = einsum('abcijk,jima->mkbc', Ptmp_t3Tv, tmp_ooov) / emkbc
-                    _add_pt2(pt2, nkpts, kconserv, [km,kk,kb], [None,None,(b0,b1),(c0,c1)], -1.*tmp)
+                      Ptmp_t3Tv_ijk = add_and_permute(kpt_indices[0], task,
+                                      (tmp_t3Tv_ijk[zki,zkj,zkk], tmp_t3Tv_jik[zkj,zki,zkk], tmp_t3Tv_kji[zkk,zkj,zki]), 'ijk')
+                      Ptmp_t3Tv_jik = add_and_permute(kpt_indices[1], task,
+                                      (tmp_t3Tv_jik[zkj,zki,zkk], tmp_t3Tv_ijk[zki,zkj,zkk], tmp_t3Tv_jki[zkj,zkk,zki]), 'jik')
+                      Ptmp_t3Tv_kji = add_and_permute(kpt_indices[2], task,
+                                      (tmp_t3Tv_kji[zkk,zkj,zki], tmp_t3Tv_kij[zkk,zki,zkj], tmp_t3Tv_ijk[zki,zkj,zkk]), 'kji')
+                      Ptmp_t3Tv_ikj = add_and_permute(kpt_indices[3], task,
+                                      (tmp_t3Tv_ikj[zki,zkk,zkj], tmp_t3Tv_jki[zkj,zkk,zki], tmp_t3Tv_kij[zkk,zki,zkj]), 'ikj')
+                      Ptmp_t3Tv_jki = add_and_permute(kpt_indices[4], task,
+                                      (tmp_t3Tv_jki[zkj,zkk,zki], tmp_t3Tv_ikj[zki,zkk,zkj], tmp_t3Tv_jik[zkj,zki,zkk]), 'jki')
+                      Ptmp_t3Tv_kij = add_and_permute(kpt_indices[5], task,
+                                      (tmp_t3Tv_kij[zkk,zki,zkj], tmp_t3Tv_kji[zkk,zkj,zki], tmp_t3Tv_ikj[zki,zkk,zkj]), 'kij')
 
-                    # Calculating Wovoo array
-                    if build_ip_t3p2:
-                        km = kconserv[ka,ki,kc]
-                        #tmp_oovv1 = eris.oovv[km,ki,kc,:,:,c0:c1,a0:a1]
-                        tmp = einsum('abcijk,mica->mbkj', Ptmp_t3Tv, tmp_oovv1)
-                        Wmbkj_out[km,kb,kk,:,b0:b1,:,:] += tmp
+                      eris_Soovv1 = (2.*oovv_jkX[zkk,kb,:,:,b0:b1,c0:c1] -
+                                        oovv_jkX[zkk,kc,:,:,c0:c1,b0:b1].transpose(0,1,3,2))
+                      eris_Soovv2 = (2.*oovv_jkX[zkk,kc,:,:,c0:c1,b0:b1] -
+                                        oovv_jkX[zkk,kb,:,:,b0:b1,c0:c1].transpose(0,1,3,2))
+                      eris_Soovv3 = (2.*oovv_jkX[zkk,ka,:,:,a0:a1,c0:c1] -
+                                        oovv_jkX[zkk,kc,:,:,c0:c1,a0:a1].transpose(0,1,3,2))
+                      eris_Soovv4 = (2.*oovv_jkX[zkk,kc,:,:,c0:c1,a0:a1] -
+                                        oovv_jkX[zkk,ka,:,:,a0:a1,c0:c1].transpose(0,1,3,2))
+                      eris_Soovv5 = (2.*oovv_jkX[zkk,ka,:,:,a0:a1,b0:b1] -
+                                        oovv_jkX[zkk,kb,:,:,b0:b1,a0:a1].transpose(0,1,3,2))
+                      eris_Soovv6 = (2.*oovv_jkX[zkk,kb,:,:,b0:b1,a0:a1] -
+                                        oovv_jkX[zkk,ka,:,:,a0:a1,b0:b1].transpose(0,1,3,2))
 
-                    # Calculating Wvvvo array
-                    if build_ea_t3p2:
-                        ke = kconserv[ki,ka,kk]
-                        #tmp_oovv2 = eris.oovv[ki,kk,ka,:,:,a0:a1,:]
-                        tmp = einsum('abcijk,ikae->cbej', Ptmp_t3Tv, tmp_oovv2)
-                        Wcbej_out[kc,kb,ke,c0:c1,b0:b1,:,:] -= tmp
+                      if ki == ka and kc == kconserv[kj, kb, kk]:
+                          pt1[ka,:,a0:a1] += 0.5*einsum('abcijk,jkbc->ia', Ptmp_t3Tv_ijk, eris_Soovv1) / eaa[:,a0:a1]
+                          if kb < kc:
+                              pt1[ka,:,a0:a1] += 0.5*einsum('abcikj,jkcb->ia', Ptmp_t3Tv_ikj, eris_Soovv2) / eaa[:,a0:a1]
 
-                    fetcher.clean()
-                logger.timer_debug1(cc, 'EOM-CCSD T3[2] (%d,%d,%d,%d,%d) [total=%d]'%(ki,kj,kk,ka,kb,nkpts**5), *cput0)
+                      if ki == kb and kc == kconserv[kk, ka, kj]:
+                          if ka < kb:
+                              pt1[kb,:,b0:b1] += 0.5*einsum('abcjik,jkac->ib', Ptmp_t3Tv_jik, eris_Soovv3) / ebb[:,b0:b1]
+                          if ka < kb and kb < kc:
+                              pt1[kb,:,b0:b1] += 0.5*einsum('abckij,jkca->ib', Ptmp_t3Tv_kij, eris_Soovv4) / ebb[:,b0:b1]
+
+                      if ki == kc and kb == kconserv[kk, ka, kj]:
+                          if kb < kc:
+                              pt1[kc,:,c0:c1] += 0.5*einsum('abcjki,jkab->ic', Ptmp_t3Tv_jki, eris_Soovv5) / ecc[:,c0:c1]
+                          if ka < kb:
+                              pt1[kc,:,c0:c1] += 0.5*einsum('abckji,jkba->ic', Ptmp_t3Tv_kji, eris_Soovv6) / ecc[:,c0:c1]
+
+                      ## Performing contribution to pt2
+                      #if ki == ka and kc == kconserv[kj, kb, kk]:
+                      #    ejkbc = (foo[kj][:,None,None,None] + foo[kk][None,:,None,None] -
+                      #            fvv[kb,b0:b1][None,None,:,None] - fvv[kc,c0:c1][None,None,None,:])
+                      #    tmp = einsum('abcijk,ia->jkbc', Ptmp_t3Tv, 0.5*fov[ki,:,a0:a1]) / ejkbc
+                      #    _add_pt2(pt2, nkpts, kconserv, [kj,kk,kb], [None,None,(b0,b1),(c0,c1)], tmp)
+
+                      # TODO: can clean this up a bit/reduce number of lines
+                      task1 = task
+                      task2 = _transpose_orb(task, transpose=(1,0,2))
+                      task3 = _transpose_orb(task, transpose=(2,1,0))
+                      task4 = _transpose_orb(task, transpose=(0,2,1))
+                      task5 = _transpose_orb(task, transpose=(2,0,1))
+                      task6 = _transpose_orb(task, transpose=(1,2,0))
+
+                      fetcher.request_data2(kpt_indices[0], task1, kconserv, *args2)
+                      fetcher.request_data2(kpt_indices[1], task2, kconserv, *args2)
+                      fetcher.request_data2(kpt_indices[2], task3, kconserv, *args2)
+                      fetcher.request_data2(kpt_indices[3], task4, kconserv, *args2)
+                      fetcher.request_data2(kpt_indices[4], task5, kconserv, *args2)
+                      fetcher.request_data2(kpt_indices[5], task6, kconserv, *args2)
+
+                      data1 = fetcher.get_data2(kpt_indices[0], task1, kconserv, *args2)
+                      data2 = fetcher.get_data2(kpt_indices[1], task2, kconserv, *args2)
+                      data3 = fetcher.get_data2(kpt_indices[2], task3, kconserv, *args2)
+                      data4 = fetcher.get_data2(kpt_indices[3], task4, kconserv, *args2)
+                      data5 = fetcher.get_data2(kpt_indices[4], task5, kconserv, *args2)
+                      data6 = fetcher.get_data2(kpt_indices[5], task6, kconserv, *args2)
+
+                      tmp_vvop1, tmp_vooo1, tmp_oovv11, tmp_oovv21 = data1
+                      tmp_vvop2, tmp_vooo2, tmp_oovv12, tmp_oovv22 = data2
+                      tmp_vvop3, tmp_vooo3, tmp_oovv13, tmp_oovv23 = data3
+                      tmp_vvop4, tmp_vooo4, tmp_oovv14, tmp_oovv24 = data4
+                      tmp_vvop5, tmp_vooo5, tmp_oovv15, tmp_oovv25 = data5
+                      tmp_vvop6, tmp_vooo6, tmp_oovv16, tmp_oovv26 = data6
+
+                      tmp_vvov1 = tmp_vvop1[:,:,:,nocc:]
+                      tmp_vvov2 = tmp_vvop2[:,:,:,nocc:]
+                      tmp_vvov3 = tmp_vvop3[:,:,:,nocc:]
+                      tmp_vvov4 = tmp_vvop4[:,:,:,nocc:]
+                      tmp_vvov5 = tmp_vvop5[:,:,:,nocc:]
+                      tmp_vvov6 = tmp_vvop6[:,:,:,nocc:]
+
+                      kd = kconserv[ka,ki,kb]
+                      ejkdc = (foo[kj][:,None,None,None] + foo[kk][None,:,None,None] -
+                               fvv[kd][None,None,:,None] - fvv[kc,c0:c1][None,None,None,:])
+                      kd = kconserv[ka,ki,kc]
+                      ejkdb = (foo[kj][:,None,None,None] + foo[kk][None,:,None,None] -
+                               fvv[kd][None,None,:,None] - fvv[kb,b0:b1][None,None,None,:])
+                      kd = kconserv[kc,ki,kb]
+                      ejkda = (foo[kj][:,None,None,None] + foo[kk][None,:,None,None] -
+                               fvv[kd][None,None,:,None] - fvv[ka,a0:a1][None,None,None,:])
+
+                      kd = kconserv[ka,ki,kb]
+                      tmp = einsum('abcijk,abid->jkdc', Ptmp_t3Tv_ijk, tmp_vvov1.conj()) / ejkdc
+                      _add_pt2(pt2, nkpts, kconserv, [kj,kk,kd], [None,None,None,(c0,c1)], tmp)
+
+                      if ka < kb:
+                          kd = kconserv[ka,ki,kb]
+                          tmp = einsum('abcjik,baid->jkdc', Ptmp_t3Tv_jik, tmp_vvov2.conj()) / ejkdc
+                          _add_pt2(pt2, nkpts, kconserv, [kj,kk,kd], [None,None,None,(c0,c1)], tmp)
+
+                      if kb < kc:
+                          kd = kconserv[ka,ki,kc]
+                          tmp = einsum('abcikj,acid->jkdb', Ptmp_t3Tv_ikj, tmp_vvov4.conj()) / ejkdb
+                          _add_pt2(pt2, nkpts, kconserv, [kj,kk,kd], [None,None,None,(b0,b1)], tmp)
+
+                          kd = kconserv[ka,ki,kc]
+                          tmp = einsum('abcjki,caid->jkdb', Ptmp_t3Tv_jki, tmp_vvov5.conj()) / ejkdb
+                          _add_pt2(pt2, nkpts, kconserv, [kj,kk,kd], [None,None,None,(b0,b1)], tmp)
+
+                      if ka < kb:
+                          kd = kconserv[kc,ki,kb]
+                          tmp = einsum('abckji,cbid->jkda', Ptmp_t3Tv_kji, tmp_vvov3.conj()) / ejkda
+                          _add_pt2(pt2, nkpts, kconserv, [kj,kk,kd], [None,None,None,(a0,a1)], tmp)
+
+                      if ka < kb and kb < kc:
+                          kd = kconserv[kc,ki,kb]
+                          tmp = einsum('abckij,bcid->jkda', Ptmp_t3Tv_kij, tmp_vvov6.conj()) / ejkda
+                          _add_pt2(pt2, nkpts, kconserv, [kj,kk,kd], [None,None,None,(a0,a1)], tmp)
+
+                      km = kconserv[kc, kk, kb]
+                      emkbc = (foo[km][:,None,None,None] + foo[kk][None,:,None,None] -
+                              fvv[kb,b0:b1][None,None,:,None] - fvv[kc,c0:c1][None,None,None,:])
+                      emkcb = (foo[km][:,None,None,None] + foo[kk][None,:,None,None] -
+                              fvv[kc,c0:c1][None,None,:,None] - fvv[kb,b0:b1][None,None,None,:])
+                      km = kconserv[ka, kk, kb]
+                      emkab = (foo[km][:,None,None,None] + foo[kk][None,:,None,None] -
+                              fvv[ka,a0:a1][None,None,:,None] - fvv[kb,b0:b1][None,None,None,:])
+                      emkba = (foo[km][:,None,None,None] + foo[kk][None,:,None,None] -
+                              fvv[kb,b0:b1][None,None,:,None] - fvv[ka,a0:a1][None,None,None,:])
+                      km = kconserv[ka, kk, kc]
+                      emkac = (foo[km][:,None,None,None] + foo[kk][None,:,None,None] -
+                              fvv[ka,a0:a1][None,None,:,None] - fvv[kc,c0:c1][None,None,None,:])
+                      emkca = (foo[km][:,None,None,None] + foo[kk][None,:,None,None] -
+                              fvv[kc,c0:c1][None,None,:,None] - fvv[ka,a0:a1][None,None,None,:])
+
+                      km = kconserv[kc, kk, kb]
+                      tmp = einsum('abcijk,aijm->mkbc', Ptmp_t3Tv_ijk, tmp_vooo1.conj()) / emkbc
+                      _add_pt2(pt2, nkpts, kconserv, [km,kk,kb], [None,None,(b0,b1),(c0,c1)], -1.*tmp)
+
+                      if ka < kb:
+                          km = kconserv[ka, kk, kc]
+                          tmp = einsum('abcjik,bijm->mkac', Ptmp_t3Tv_jik, tmp_vooo2.conj()) / emkac
+                          _add_pt2(pt2, nkpts, kconserv, [km,kk,ka], [None,None,(a0,a1),(c0,c1)], -1.*tmp)
+
+                          km = kconserv[ka, kk, kb]
+                          tmp = einsum('abckji,cijm->mkba', Ptmp_t3Tv_kji, tmp_vooo3.conj()) / emkba
+                          _add_pt2(pt2, nkpts, kconserv, [km,kk,kb], [None,None,(b0,b1),(a0,a1)], -1.*tmp)
+
+                      if kb < kc:
+                          km = kconserv[kc, kk, kb]
+                          tmp = einsum('abcikj,aijm->mkcb', Ptmp_t3Tv_ikj, tmp_vooo4.conj()) / emkcb
+                          _add_pt2(pt2, nkpts, kconserv, [km,kk,kc], [None,None,(c0,c1),(b0,b1)], -1.*tmp)
+
+                          km = kconserv[ka, kk, kb]
+                          tmp = einsum('abcjki,cijm->mkab', Ptmp_t3Tv_jki, tmp_vooo5.conj()) / emkab
+                          _add_pt2(pt2, nkpts, kconserv, [km,kk,ka], [None,None,(a0,a1),(b0,b1)], -1.*tmp)
+
+                      if ka < kb and kb < kc:
+                          km = kconserv[ka, kk, kc]
+                          tmp = einsum('abckij,bijm->mkca', Ptmp_t3Tv_kij, tmp_vooo6.conj()) / emkca
+                          _add_pt2(pt2, nkpts, kconserv, [km,kk,kc], [None,None,(c0,c1),(a0,a1)], -1.*tmp)
+
+                      # Calculating Wovoo array
+                      if build_ip_t3p2:
+                          km = kconserv[ka,ki,kc]
+                          tmp = einsum('abcijk,mica->mbkj', Ptmp_t3Tv_ijk, tmp_oovv11)
+                          Wmbkj_out[km,kb,kk,:,b0:b1,:,:] += tmp
+
+                          if ka < kb:
+                              km = kconserv[kb,ki,kc]
+                              tmp = einsum('abcjik,micb->makj', Ptmp_t3Tv_jik, tmp_oovv12)
+                              Wmbkj_out[km,ka,kk,:,a0:a1,:,:] += tmp
+
+                              km = kconserv[ka,ki,kc]
+                              tmp = einsum('abckji,miac->mbkj', Ptmp_t3Tv_kji, tmp_oovv13)
+                              Wmbkj_out[km,kb,kk,:,b0:b1,:,:] += tmp
+
+                          if kb < kc:
+                              km = kconserv[ka,ki,kb]
+                              tmp = einsum('abcikj,miba->mckj', Ptmp_t3Tv_ikj, tmp_oovv14)
+                              Wmbkj_out[km,kc,kk,:,c0:c1,:,:] += tmp
+
+                              km = kconserv[kb,ki,kc]
+                              tmp = einsum('abcjki,mibc->makj', Ptmp_t3Tv_jki, tmp_oovv15)
+                              Wmbkj_out[km,ka,kk,:,a0:a1,:,:] += tmp
+
+                          if ka < kb and kb < kc:
+                              km = kconserv[ka,ki,kb]
+                              tmp = einsum('abckij,miab->mckj', Ptmp_t3Tv_kij, tmp_oovv16)
+                              Wmbkj_out[km,kc,kk,:,c0:c1,:,:] += tmp
+
+                      # Calculating Wvvvo array
+                      if build_ea_t3p2:
+                          ke = kconserv[ki,ka,kk]
+                          tmp = einsum('abcijk,ikae->cbej', Ptmp_t3Tv_ijk, tmp_oovv21)
+                          Wcbej_out[kc,kb,ke,c0:c1,b0:b1,:,:] -= tmp
+
+                          if ka < kb:
+                              ke = kconserv[ki,kb,kk]
+                              tmp = einsum('abcjik,ikbe->caej', Ptmp_t3Tv_jik, tmp_oovv22)
+                              Wcbej_out[kc,ka,ke,c0:c1,a0:a1,:,:] -= tmp
+
+                              ke = kconserv[ki,kc,kk]
+                              tmp = einsum('abckji,ikce->abej', Ptmp_t3Tv_kji, tmp_oovv23)
+                              Wcbej_out[ka,kb,ke,a0:a1,b0:b1,:,:] -= tmp
+
+                          if kb < kc:
+                              ke = kconserv[ki,ka,kk]
+                              tmp = einsum('abcikj,ikae->bcej', Ptmp_t3Tv_ikj, tmp_oovv24)
+                              Wcbej_out[kb,kc,ke,b0:b1,c0:c1,:,:] -= tmp
+
+                              ke = kconserv[ki,kc,kk]
+                              tmp = einsum('abcjki,ikce->baej', Ptmp_t3Tv_jki, tmp_oovv25)
+                              Wcbej_out[kb,ka,ke,b0:b1,a0:a1,:,:] -= tmp
+
+                          if ka < kb and kb < kc:
+                              ke = kconserv[ki,kb,kk]
+                              tmp = einsum('abckij,ikbe->acej', Ptmp_t3Tv_kij, tmp_oovv26)
+                              Wcbej_out[ka,kc,ke,a0:a1,c0:c1,:,:] -= tmp
+                      fetcher.clean()
+
+                logger.timer_debug1(cc, 't1[2],t2[2] gen (%d:%d,%d:%d,%d:%d) ka,kb=(%d,%d)' %
+                                    (ki0,ki1,kj0,kj1,kk0,kk1,ka,kb), *cput0)
+                logger.timer_debug1(cc, 'EOM t3[2] total (%d:%d,%d:%d,%d:%d) ka,kb=(%d,%d)' %
+                                    (ki0,ki1,kj0,kj1,kk0,kk1,ka,kb), *cput1)
+
+
+        global T3_NCONTRACT
+        T3_NCONTRACT = comm.allreduce(T3_NCONTRACT)
         comm.Barrier()
-        logger.timer_debug1(cc, 'EOM-CCSD T3[2]', *cput1)
+        logger.debug1(cc, 'Generated %s integrals (=%s without symmetry).', T3_NCONTRACT, ntotal_kpts*6*len(tasks))
+        logger.timer_debug1(cc, 'EOM-CCSD T3[2]', *cput2)
+        logger.debug1(cc, 'Total time spent in t3 %s', time_spent_t3)
+        logger.debug1(cc, 'Total time spent in t2/t1 %s', (time.time() - cput2[1]) - time_spent_t3)
         feri_tmp.close()
 
     get_t3_fast_new()
+
+    cput0 = (time.clock(), time.time())
     safeAllreduceInPlace(comm, pt1)
     safeAllreduceInPlace(comm, pt2)
-    safeAllreduceInPlace(comm, Wmbkj_out)
-    safeAllreduceInPlace(comm, Wcbej_out)
+    if build_ip_t3p2:
+        safeAllreduceInPlace(comm, Wmbkj_out)
+    if build_ea_t3p2:
+        safeAllreduceInPlace(comm, Wcbej_out)
+    logger.timer_debug1(cc, 'reducing integrals', *cput0)
 
     delta_ccsd_energy = cc.energy(pt1, pt2, eris) - ccsd_energy
     logger.info(cc, 'CCSD energy T3[2] correction : %16.12e', delta_ccsd_energy)
@@ -878,7 +1261,7 @@ def run_gamma():
 
 
 def run_kpoint():
-    nk = [2,1,1]
+    nk = [1,1,2]
     scell = super_cell(cell, nk)
     mf = pbcscf.RHF(scell)
     mf.conv_tol = 1e-12
@@ -954,6 +1337,7 @@ def run_benchmark(nocc=15, nvir=25, nk=[2,1,1]):
     rand_kmf = make_rand_kmf()
 
     def rand_t1_t2(kmf, mycc):
+        np.random.seed(0)
         nkpts = mycc.nkpts
         nocc = mycc.nocc
         nmo = mycc.nmo
@@ -993,27 +1377,39 @@ def run_benchmark(nocc=15, nvir=25, nk=[2,1,1]):
             filename = 'myeris.hdf5'
             print 'writing'
             if not check_read_success(filename):
+                np.random.seed(0)
                 feri = h5py.File(filename, 'w', **h5py_kwargs)
 
+                my_rand_vovv = crand((nvir,nocc,nvir,nvir))
+                my_rand_ooov = crand((nocc,nocc,nocc,nvir))
                 dtype = np.complex
-                eris_vovv = crand((nkpts,nkpts,nkpts,nvir,nocc,nvir,nvir))
-                eris_ooov = crand((nkpts,nkpts,nkpts,nocc,nocc,nocc,nvir))
                 self.oooo = feri.create_dataset('oooo', (nkpts,nkpts,nkpts,nocc,nocc,nocc,nocc), dtype=dtype)
-                self.ooov = feri.create_dataset('ooov', eris_ooov.shape, dtype=dtype)
+                self.ooov = feri.create_dataset('ooov', (nkpts,nkpts,nkpts,nocc,nocc,nocc,nvir), dtype=dtype)
                 self.oovv = feri.create_dataset('oovv', (nkpts,nkpts,nkpts,nocc,nocc,nvir,nvir), dtype=dtype)
                 self.ovov = feri.create_dataset('ovov', (nkpts,nkpts,nkpts,nocc,nvir,nocc,nvir), dtype=dtype)
                 self.voov = feri.create_dataset('voov', (nkpts,nkpts,nkpts,nvir,nocc,nocc,nvir), dtype=dtype)
-                self.vovv = feri.create_dataset('vovv', eris_vovv.shape, dtype=dtype)
+                self.vovv = feri.create_dataset('vovv', (nkpts,nkpts,nkpts,nvir,nocc,nvir,nvir), dtype=dtype)
 
-                if rank == 0:
-                    self.oooo[:] = crand((nkpts,nkpts,nkpts,nocc,nocc,nocc,nocc))
-                    self.ooov[:] = eris_ooov
-                    self.oovv[:] = crand((nkpts,nkpts,nkpts,nocc,nocc,nvir,nvir))
-                    self.ovov[:] = crand((nkpts,nkpts,nkpts,nocc,nvir,nocc,nvir))
-                    self.voov[:] = crand((nkpts,nkpts,nkpts,nvir,nocc,nocc,nvir))
-                    self.vovv[:] = eris_vovv
+                crand_oooo = crand((nocc,nocc,nocc,nocc))
+                crand_ooov = my_rand_ooov
+                crand_vovv = my_rand_vovv
+                crand_oovv = crand((nocc,nocc,nvir,nvir))
+                crand_ovov = crand((nocc,nvir,nocc,nvir))
+                crand_voov = crand((nvir,nocc,nocc,nvir))
+                kblocks = []
+                for ki, kj, kk in product(range(nkpts), repeat=3):
+                    kblocks.append((ki,kj,kk))
+                for kblock in mpi.work_share_partition(kblocks, loadmin=2):
+                    ki, kj, kk = kblock
+                    self.oooo[ki,kj,kk] = crand_oooo
+                    self.ooov[ki,kj,kk] = crand_ooov
+                    self.oovv[ki,kj,kk] = crand_oovv
+                    self.ovov[ki,kj,kk] = crand_ovov
+                    self.voov[ki,kj,kk] = crand_voov
+                    for a0, a1 in lib.prange(0, nvir, 8):
+                        self.vovv[ki,kj,kk,a0:a1] = crand_vovv[a0:a1,:,:,:]
 
-                feri['completed'] = True
+                feri.attrs['completed'] = True
                 feri.close()
 
             print 'reading'
@@ -1032,7 +1428,8 @@ def run_benchmark(nocc=15, nvir=25, nk=[2,1,1]):
     eris = eris()
     eris.fock = np.array([np.diag(x) for x in rand_kmf.mo_energy])
     print 'getting cont'
-    get_t3p2_amplitude_contribution(rand_cc, t1, t2, eris=eris, copy_amps=True)
+    get_t3p2_amplitude_contribution(rand_cc, t1, t2, eris=eris, copy_amps=True,
+                                    build_ip_t3p2=True, build_ea_t3p2=True)
 
 if __name__ == '__main__':
     cell = pbcgto.Cell()
@@ -1055,7 +1452,7 @@ if __name__ == '__main__':
 
     do_benchmark = True
     if do_benchmark:
-        run_benchmark(nocc=4, nvir=22, nk=[2,2,2])
+        run_benchmark(nocc=8, nvir=22, nk=[1,1,3])
     else:
         gamma = False
         if gamma:

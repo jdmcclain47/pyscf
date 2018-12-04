@@ -625,18 +625,21 @@ def get_t3p2_amplitude_contribution(cc, t1, t2, eris=None, copy_amps=True,
             tmp_t3Tv_ijk = np.asarray(data[0], dtype=np.complex, order='C')
             tmp_t3Tv_jik = np.asarray(data[1], dtype=np.complex, order='C')
             tmp_t3Tv_kji = np.asarray(data[2], dtype=np.complex, order='C')
+            out_ijk = np.empty(data[0].shape, dtype=np.complex, order='C')
 
             drv = _ccsd.libcc.MPICCadd_and_permute_t3T
             drv(ctypes.c_int(nocc), ctypes.c_int(nvir),
+                ctypes.c_int(0),
+                out_ijk.ctypes.data_as(ctypes.c_void_p),
                 tmp_t3Tv_ijk.ctypes.data_as(ctypes.c_void_p),
                 tmp_t3Tv_jik.ctypes.data_as(ctypes.c_void_p),
                 tmp_t3Tv_kji.ctypes.data_as(ctypes.c_void_p),
                 mo_offset.ctypes.data_as(ctypes.c_void_p),
                 slices.ctypes.data_as(ctypes.c_void_p))
-            # drv has overwritten tmp_t3Tv_ijk
-            Ptmp_t3Tv = tmp_t3Tv_ijk  #2.*t3Tv_ijk - t3Tv_jik.transpose(0,1,2,4,3,5)
-                                      #            - t3Tv_kji.transpose(0,1,2,5,4,3)
-            return Ptmp_t3Tv
+            # for ki,kj,kk, this operation is:
+            #     out = 2.*t3Tv_ijk - t3Tv_jik.transpose(0,1,2,4,3,5)
+            #                       - t3Tv_kji.transpose(0,1,2,5,4,3)
+            return out_ijk
 
         #full_t3v_ijk = get_full_t3p2(cc, t1, t2, eris)  # Useful for checking
         fetcher = DataHandler()

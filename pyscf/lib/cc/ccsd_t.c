@@ -561,6 +561,7 @@ void CCsd_t_zcontract(double complex *e_tot,
                                         cache_row_b, cache_col_b,
                                         sizeof(double complex));
 
+        printf("length of jobs %ld", njobs);
         int *permute_idx = malloc(sizeof(int) * nocc*nocc*nocc * 6);
         _make_permute_indices(permute_idx, nocc);
 
@@ -615,6 +616,7 @@ void CCsd_t_get_wz(double complex *e_tot,
         int *permute_idx = malloc(sizeof(int) * nocc*nocc*nocc * 6);
         _make_permute_indices(permute_idx, nocc);
 
+        printf("length of jobs %ld", njobs);
 #pragma omp parallel default(none) \
         shared(njobs, nocc, nvir, mo_energy, t1T, t2T, nirrep, o_ir_loc, \
                v_ir_loc, oo_ir_loc, orbsym, vooo, fvo, jobs, e_tot, permute_idx)
@@ -1053,10 +1055,13 @@ void zcontract_t3T(double complex *t3T, double *mo_energy, double complex *t1T,
 //#pragma omp critical
 //        *e_tot += e;
 }
+        free(jobs);
         free(permute_idx);
 }
 
-void MPICCadd_and_permute_t3T(int nocc, int nvir, double complex* t3T_ijk,
+void MPICCadd_and_permute_t3T(int nocc, int nvir, int swap_indices,
+                              double complex* out,
+                              double complex* t3T_ijk,
                               double complex* t3T_jik, 
                               double complex* t3T_kji,
                               int *mo_offset, 
@@ -1095,15 +1100,38 @@ void MPICCadd_and_permute_t3T(int nocc, int nvir, double complex* t3T_ijk,
         _make_permute_indices(permute_idx, nocc);
 
 #pragma omp parallel default(none) \
-        shared(njobs, nocc, nvir, t3T_ijk, t3T_jik, t3T_kji, mo_offset, jobs, permute_idx)
+        shared(swap_indices, njobs, nocc, nvir, out, t3T_ijk, t3T_jik, t3T_kji, mo_offset, jobs, permute_idx)
 {
         int a, b, c, n, i, j, k;
         int* jik_idx;
         int* kji_idx;
         int offset;
         int job;
-        jik_idx = permute_idx + nooo*2;
-        kji_idx = permute_idx + nooo*5;
+        if (swap_indices == 0){ // indices aren't swapped, i.e. `ijk`
+            jik_idx = permute_idx + nooo*2;  // jik <- ijk
+            kji_idx = permute_idx + nooo*5;  // kji <- ijk
+        } else if (swap_indices == 1){  // first two indices are swapped, i.e. `jik`
+            jik_idx = permute_idx + nooo*2;  // ijk <- jik
+            kji_idx = permute_idx + nooo*1;  // jki <- jik
+        } else if (swap_indices == 2){  // `kji`
+            jik_idx = permute_idx + nooo*1;  // kij <- kji
+            kji_idx = permute_idx + nooo*5;  // ijk <- kji
+        } else if (swap_indices == 3){  // `ikj`
+            jik_idx = permute_idx + nooo*5;  // jki <- ikj
+            kji_idx = permute_idx + nooo*2;  // kij <- ikj
+        } else if (swap_indices == 4){  // `jki`
+            jik_idx = permute_idx + nooo*5;  // ikj <- jki
+            kji_idx = permute_idx + nooo*1;  // jik <- jki
+        } else if (swap_indices == 5){  // `kij`
+            jik_idx = permute_idx + nooo*1;  // kji <- kij
+            kji_idx = permute_idx + nooo*2;  // ikj <- kij
+        }
+                //idx0[m] = i * nn + j * n + k;
+                //idx1[m] = i * nn + k * n + j;
+                //idx2[m] = j * nn + i * n + k;
+                //idx3[m] = k * nn + i * n + j;
+                //idx4[m] = j * nn + k * n + i;
+                //idx5[m] = k * nn + j * n + i;
 
 #pragma omp for schedule (dynamic, 4)
         for (job = 0; job < njobs; job++) {
@@ -1114,10 +1142,12 @@ void MPICCadd_and_permute_t3T(int nocc, int nvir, double complex* t3T_ijk,
             for (n = 0, i = 0; i < nocc; i++) {
             for (j = 0; j < nocc; j++) {
             for (k = 0; k < nocc; k++, n++) {
-                t3T_ijk[offset + n] = 2.*t3T_ijk[offset + n] - 
-                                         t3T_jik[offset + jik_idx[n]] -
-                                         t3T_kji[offset + kji_idx[n]];
+                out[offset + n] = 2.*t3T_ijk[offset + n] - 
+                                     t3T_jik[offset + jik_idx[n]] -
+                                     t3T_kji[offset + kji_idx[n]];
             } } }
         }
 }
+        free(permute_idx);
+        free(jobs);
 }
