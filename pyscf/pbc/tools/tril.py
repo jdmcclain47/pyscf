@@ -23,7 +23,7 @@ def tril_index(ki,kj):
 def unpack_tril(in_array,nkpts,kp,kq,kr,ks):
     # We are only dealing with the case that one of kp,kq,kr is a list
     #
-    if in_array.shape[0] == nkpts:
+    if len(in_array.shape) == 7 and in_array.shape[0] == nkpts:
         return in_array[kp,kq,kr].copy()
     nints = sum([isinstance(x,int) for x in (kp,kq,kr)])
     assert(nints>=2)
