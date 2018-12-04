@@ -136,9 +136,22 @@ class EOM(lib.StreamObject):
 
 
 def _check_left_right_eigensystem(right_converged, right_evals, right_evecs,
-                                  left_converged, left_evals, left_evecs):
+                                  left_converged, left_evals, left_evecs, tol=1e-6):
     '''Ensure left and right eigenvalues match up.'''
-    return right_evals, right_evecs, left_evecs
+    right_evecs, left_evecs = [np.atleast_2d(x) for x in [right_evecs, left_evecs]]
+    right_evals, left_evals = [np.atleast_1d(x) for x in [right_evals, left_evals]]
+
+    right_indices = []
+    left_indices = []
+    for ir in range(len(right_evals)):
+        for il in range(len(left_evals)):
+            if il in right_indices:
+                continue
+            if abs(right_evals[ir] - left_evals[il]) < tol:
+                right_indices.append(ir)
+                left_indices.append(il)
+                break
+    return right_evals[right_indices], right_evecs[right_indices], left_evecs[left_indices]
 
 
 def pkernel(eom, nroots=1, koopmans=False, right_guess=None,
@@ -193,7 +206,7 @@ def kernel_star(eom, nroots=1, koopmans=False, right_guess=None,
     """Calculates CCSD* perturbative correction.
 
     Simply calls the relevant `kernel()` function and `perturb_star` of the
-     `eom` class.
+    `eom` class.
 
     Returns:
         e_t_a_star (list of float):
@@ -442,8 +455,8 @@ def _ipccsd_star(eom, ipccsd_evals, ipccsd_evecs, lipccsd_evecs, eris=None, type
 
         deltaE = 0.5*np.einsum('ijkab,ijkab,ijkab', lijkab, rijkab, _eijkab)
         deltaE = deltaE.real
-        logger.info(eom, "Exc. energy, delta energy = %16.12f, %16.12f",
-                    _eval+deltaE, deltaE)
+        logger.info(eom, "ipccsd energy, star energy, delta energy = %16.12f, %16.12f, %16.12f",
+                    _eval, _eval+deltaE, deltaE)
         e.append(_eval+deltaE)
     return e
 
@@ -746,8 +759,8 @@ def _eaccsd_star(eom, eaccsd_evals, eaccsd_evecs, leaccsd_evecs, eris=None, type
                 + 1.*lijabc.transpose(0,1,4,2,3)
         deltaE = 0.5*np.einsum('ijabc,ijabc,ijabc', lijabc,rijabc,_eijabc)
         deltaE = deltaE.real
-        logger.info(eom, "Exc. energy, delta energy = %16.12f, %16.12f",
-                    _eval+deltaE, deltaE)
+        logger.info(eom, "eaccsd energy, star energy, delta energy = %16.12f, %16.12f, %16.12f",
+                    _eval, _eval+deltaE, deltaE)
         e.append(_eval+deltaE)
     return e
 
@@ -1595,7 +1608,7 @@ def get_t3p2_amplitude_contribution_slow(cc, t1, t2, eris=None, copy_amps=True,
     ovov = _cp(eris.ovov)
     ovvv = _cp(eris.get_ovvv())
     eris_vvov = eris.get_ovvv().conj().transpose(1,3,0,2)
-    eris_vooo = eris.ovoo.conj().transpose(1,0,3,2)
+    eris_vooo = eris.ovoo[:].conj().transpose(1,0,3,2)
 
     ccsd_energy = ccsd.energy(cc, t1, t2, eris)
 
@@ -1623,31 +1636,36 @@ def get_t3p2_amplitude_contribution_slow(cc, t1, t2, eris=None, copy_amps=True,
     eijkabc = eijab[:, :, None, :, :, None] + eia[None, None, :, None, None, :]
     tmp_t3 /= eijkabc
 
-    pt1 =  0.5 * lib.einsum('jbkc,ijkabc->ia', 2.*ovov - ovov.transpose(0,3,2,1), 2.*tmp_t3)
-    pt1 -= 0.5 * lib.einsum('jbkc,jikabc->ia', 2.*ovov - ovov.transpose(0,3,2,1), 1.*tmp_t3)
-    pt1 -= 0.5 * lib.einsum('jbkc,kjiabc->ia', 2.*ovov - ovov.transpose(0,3,2,1), 1.*tmp_t3)
+    Ptmp_t3 = 2.*tmp_t3 - tmp_t3.transpose(1,0,2,3,4,5) - tmp_t3.transpose(2,1,0,3,4,5)
+    #pt1 =  0.5 * lib.einsum('jbkc,ijkabc->ia', 2.*ovov - ovov.transpose(0,3,2,1), 2.*tmp_t3)
+    #pt1 += 0.5 * lib.einsum('jbkc,jikabc->ia', 2.*ovov - ovov.transpose(0,3,2,1),  - tmp_t3)
+    #pt1 += 0.5 * lib.einsum('jbkc,kjiabc->ia', 2.*ovov - ovov.transpose(0,3,2,1),  - tmp_t3)
+    pt1 =  0.5 * lib.einsum('jbkc,ijkabc->ia', 2.*ovov - ovov.transpose(0,3,2,1), Ptmp_t3)
 
-    tmp =  0.5 * lib.einsum('ijkabc,ia->jkbc', tmp_t3, 2.*fov)
-    tmp += 0.5 * lib.einsum('jikabc,ia->jkbc', tmp_t3, -fov)
-    tmp += 0.5 * lib.einsum('kjiabc,ia->jkbc', tmp_t3, -fov)
+    #tmp =  0.5 * lib.einsum('ijkabc,ia->jkbc', 2.*tmp_t3, fov)
+    #tmp += 0.5 * lib.einsum('jikabc,ia->jkbc',  - tmp_t3, fov)
+    #tmp += 0.5 * lib.einsum('kjiabc,ia->jkbc',  - tmp_t3, fov)
+    tmp =  0.5 * lib.einsum('ijkabc,ia->jkbc', Ptmp_t3, fov)
     pt2 = tmp + tmp.transpose(1,0,3,2)
 
     #     b\    / \    /
     #  /\---\  /   \  /
     # i\/a  d\/j   k\/c
     # ------------------
-    tmp =  lib.einsum('ijkabc,iadb->jkdc', tmp_t3, 2.*ovvv)
-    tmp += lib.einsum('jikabc,iadb->jkdc', tmp_t3, -ovvv)
-    tmp += lib.einsum('kjiabc,iadb->jkdc', tmp_t3, -ovvv)
+    #tmp =  lib.einsum('ijkabc,iadb->jkdc', 2.*tmp_t3, ovvv)
+    #tmp += lib.einsum('jikabc,iadb->jkdc',  - tmp_t3, ovvv)
+    #tmp += lib.einsum('kjiabc,iadb->jkdc',  - tmp_t3, ovvv)
+    tmp =  lib.einsum('ijkabc,iadb->jkdc', Ptmp_t3, ovvv)
     pt2 += (tmp + tmp.transpose(1,0,3,2))
 
     #     m\    / \    /
     #  /\---\  /   \  /
     # i\/a  j\/b   k\/c
     # ------------------
-    tmp =  lib.einsum('ijkabc,iajm->mkbc', tmp_t3, 2.*eris.ovoo)
-    tmp += lib.einsum('jikabc,iajm->mkbc', tmp_t3, -eris.ovoo)
-    tmp += lib.einsum('kjiabc,iajm->mkbc', tmp_t3, -eris.ovoo)
+    #tmp =  lib.einsum('ijkabc,iajm->mkbc', 2.*tmp_t3, eris.ovoo)
+    #tmp += lib.einsum('jikabc,iajm->mkbc',  - tmp_t3, eris.ovoo)
+    #tmp += lib.einsum('kjiabc,iajm->mkbc',  - tmp_t3, eris.ovoo)
+    tmp =  lib.einsum('ijkabc,iajm->mkbc', Ptmp_t3, eris.ovoo)
     pt2 -= (tmp + tmp.transpose(1,0,3,2))
 
     eia = foo[:, None] - fvv[None, :]
@@ -1659,13 +1677,15 @@ def get_t3p2_amplitude_contribution_slow(cc, t1, t2, eris=None, copy_amps=True,
     pt1 += t1
     pt2 += t2
 
-    Wmbkj =  lib.einsum('ijkabc,mcia->mbkj', tmp_t3, 2.*ovov)
-    Wmbkj += lib.einsum('jikabc,mcia->mbkj', tmp_t3, -ovov)
-    Wmbkj += lib.einsum('kjiabc,mcia->mbkj', tmp_t3, -ovov)
+    #Wmbkj =  lib.einsum('ijkabc,mcia->mbkj', 2.*tmp_t3, ovov)
+    #Wmbkj += lib.einsum('jikabc,mcia->mbkj',  - tmp_t3, ovov)
+    #Wmbkj += lib.einsum('kjiabc,mcia->mbkj',  - tmp_t3, ovov)
+    Wmbkj =  lib.einsum('ijkabc,mcia->mbkj', Ptmp_t3, ovov)
 
-    Wcbej =  lib.einsum('ijkabc,iake->cbej', tmp_t3, 2.*ovov)
-    Wcbej += lib.einsum('jikabc,iake->cbej', tmp_t3, -ovov)
-    Wcbej += lib.einsum('kjiabc,iake->cbej', tmp_t3, -ovov)
+    #Wcbej =  lib.einsum('ijkabc,iake->cbej', 2.*tmp_t3, ovov)
+    #Wcbej += lib.einsum('jikabc,iake->cbej',  - tmp_t3, ovov)
+    #Wcbej += lib.einsum('kjiabc,iake->cbej',  - tmp_t3, ovov)
+    Wcbej =  lib.einsum('ijkabc,iake->cbej', Ptmp_t3, ovov)
     Wcbej = Wcbej * -1.
 
     delta_ccsd_energy = ccsd.energy(cc, pt1, pt2, eris) - ccsd_energy
