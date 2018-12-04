@@ -107,10 +107,11 @@ def _contract(subscripts, *tensors, **kwargs):
         return numpy.einsum(idx_str, *tensors)
 
     A, B = tensors
-    # Call numpy.asarray because A or B may be HDF5 Datasets 
+    # Call numpy.asarray because A or B may be HDF5 Datasets
     A = numpy.asarray(A, order='A')
     B = numpy.asarray(B, order='A')
-    if A.size < EINSUM_MAX_SIZE or B.size < EINSUM_MAX_SIZE:
+    if ((A.size < EINSUM_MAX_SIZE or B.size < EINSUM_MAX_SIZE) and
+        (A.size * B.size < EINSUM_MAX_SIZE**2)):
         return numpy.einsum(idx_str, *tensors)
 
     C_dtype = numpy.result_type(A, B)
